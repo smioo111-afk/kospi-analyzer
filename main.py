@@ -712,6 +712,33 @@ def start_scheduler() -> None:
         misfire_grace_time=7200,
     )
 
+    # 일회성: performance_tracking 유효 샘플 30건 도달 시 텔레그램 알림.
+    # 플래그 파일 존재하면 잡 내부에서 즉시 종료 (재발송 방지).
+    # 알림 수신 후 docs/sample_notifier_cleanup.md 절차로 제거.
+    from tools.sample_threshold_notifier import (
+        FLAG_PATH as _SAMPLE_FLAG_PATH,
+        scheduled_job as _sample_threshold_job,
+    )
+    if not _SAMPLE_FLAG_PATH.exists():
+        scheduler.add_job(
+            _sample_threshold_job,
+            CronTrigger(
+                hour=16, minute=30,
+                day_of_week="mon-fri",
+                timezone=SchedulerConfig.TIMEZONE,
+            ),
+            id="sample_threshold_notifier",
+            name="샘플 30개 도달 알림 (일회성)",
+            misfire_grace_time=3600,
+        )
+        logger.info(
+            "스케줄러 등록: 매일 16:30 샘플 30개 알림 (일회성)")
+    else:
+        logger.info(
+            "샘플 30개 알림 이미 발송됨 → 잡 등록 스킵 (%s)",
+            _SAMPLE_FLAG_PATH,
+        )
+
     logger.info(
         "스케줄러 등록: 매일 %02d:%02d (월~금, %s)",
         SchedulerConfig.DATA_COLLECT_HOUR,

@@ -177,6 +177,14 @@
   등록일: 2026-04-22
   상태: 열림
 
+[P2][OPS] 샘플 30개 알림 코드 제거
+  배경: 일회성 알림. 발송 후 코드 불필요.
+  내용: docs/sample_notifier_cleanup.md 절차대로 제거.
+  전제조건: 텔레그램 알림 수신 확인.
+  공수: S
+  등록일: 2026-04-22
+  상태: 열림
+
 [P2][BUG] signals.py 판정 기준 문서/코드 불일치
   배경: docstring은 종합 >=80 이나 settings.py는 STRONG_BUY_SCORE=75.
   내용: 실제 운영 값 기준으로 docstring 수정.
