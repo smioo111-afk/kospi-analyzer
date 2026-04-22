@@ -25,6 +25,12 @@ class KISConfig:
     ACCOUNT_NO: str = os.getenv("KIS_ACCOUNT_NO", "")
     BASE_URL: str = os.getenv("KIS_BASE_URL", "https://openapivts.koreainvestment.com:29443")
     IS_PAPER_TRADING: bool = os.getenv("KIS_IS_PAPER_TRADING", "true").lower() == "true"
+    # async 클라이언트(v4.0)에서 사용하는 초당 허용 호출 수.
+    # KIS 공식 한도는 초당 20. 안전 마진 25% 확보 위해 기본 15.
+    # 환경변수로 롤백/튜닝 가능: KIS_RATE_LIMIT_PER_SEC
+    RATE_LIMIT_PER_SEC: int = int(os.getenv("KIS_RATE_LIMIT_PER_SEC", "15"))
+    # [DEPRECATED] sync 동기 클라이언트 시절 호출 간격(초). v4.0 async 전환 후
+    # 직접 사용되지 않으나, 비상 rollback 경로에서 의미가 생길 수 있어 보존.
     RATE_LIMIT_INTERVAL: float = 0.5
     TOKEN_REFRESH_BUFFER: int = 3600
     MAX_RETRIES: int = 3

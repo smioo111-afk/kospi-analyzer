@@ -2,8 +2,9 @@
 # 설치: pip install -r requirements.txt
 
 # === HTTP 클라이언트 ===
-requests>=2.31.0          # KIS/DART API 동기 호출
-aiohttp>=3.9.0            # 비동기 API 호출 (대량 종목 조회)
+requests>=2.31.0          # DART API 동기 호출 / 레거시 경로
+aiohttp>=3.13.0           # KIS API async 호출
+aiolimiter>=1.1.0         # KIS rate limiter (토큰 버킷, 초당 N개 엄격 보장)
 
 # === 데이터 분석 ===
 pandas>=2.1.0             # 재무 데이터 정합 및 스코어링

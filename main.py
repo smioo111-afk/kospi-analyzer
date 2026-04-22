@@ -310,24 +310,58 @@ class AnalysisPipeline:
             if portfolio:
                 scored_map = {s["stock_code"]: s for s in scored_list}
                 fin_map = {f["stock_code"]: f for f in financial_list}
+
+                # scored_list에 없는 종목만 추출해 병렬 조회
+                missing_codes = [
+                    p["stock_code"] for p in portfolio
+                    if p["stock_code"] not in scored_map
+                ]
+
+                fetched: dict[str, tuple[Any, Any]] = {}
+                if missing_codes:
+                    async with self.kis:
+                        price_task = asyncio.gather(
+                            *[self.kis.aget_stock_price(c)
+                              for c in missing_codes],
+                            return_exceptions=True,
+                        )
+                        chart_task = asyncio.gather(
+                            *[self.kis.aget_daily_chart(c, days=60)
+                              for c in missing_codes],
+                            return_exceptions=True,
+                        )
+                        prices, charts = await asyncio.gather(
+                            price_task, chart_task)
+                    for code, price_res, chart_res in zip(
+                        missing_codes, prices, charts,
+                    ):
+                        fetched[code] = (price_res, chart_res)
+
                 for p in portfolio:
                     code = p["stock_code"]
                     if code in scored_map:
                         portfolio_scores_map[code] = scored_map[code]
-                    else:
-                        # scored_list에 없는 종목은 개별 조회 + 스코어링
-                        try:
-                            price_data = self.kis.get_stock_price(code)
-                            chart = self.kis.get_daily_chart(code, days=60)
-                            fin = fin_map.get(code, self.scorer._empty_fin(code))
-                            score = self.scorer.calculate_score(price_data, fin, chart)
-                            portfolio_scores_map[code] = score
-                            # 손절도 계산
-                            sl = self.stoploss_calc.calculate_stoploss(
-                                price_data.get("current_price", 0), chart)
-                            stoploss_map[code] = sl
-                        except Exception as e:
-                            logger.warning("포트폴리오 종목 %s 조회 실패: %s", code, e)
+                        continue
+                    price_res, chart_res = fetched.get(code, (None, None))
+                    if (isinstance(price_res, Exception)
+                            or isinstance(chart_res, Exception)
+                            or price_res is None):
+                        err = price_res if isinstance(
+                            price_res, Exception) else chart_res
+                        logger.warning(
+                            "포트폴리오 종목 %s 조회 실패: %s", code, err)
+                        continue
+                    try:
+                        fin = fin_map.get(code, self.scorer._empty_fin(code))
+                        score = self.scorer.calculate_score(
+                            price_res, fin, chart_res)
+                        portfolio_scores_map[code] = score
+                        sl = self.stoploss_calc.calculate_stoploss(
+                            price_res.get("current_price", 0), chart_res)
+                        stoploss_map[code] = sl
+                    except Exception as e:
+                        logger.warning(
+                            "포트폴리오 종목 %s 스코어링 실패: %s", code, e)
 
             # 9. 텔레그램 발송
             await self.bot.send_daily_report(
@@ -377,6 +411,104 @@ class AnalysisPipeline:
                 pass
             return False
 
+    async def _collect_price_data(
+        self,
+        target_codes: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        """시세 데이터 수집 + PER/PBR 보강 + 종목명 폴백.
+
+        `async with self.kis:` 컨텍스트 안에서 호출되어야 한다.
+        """
+        if target_codes is None:
+            # === 월요일: 전종목 스캔 ===
+            price_list = await self.kis.aget_kospi_stock_list()
+            if not price_list:
+                return []
+            logger.info("코스피 %d 종목 시세 수집 완료", len(price_list))
+
+            # stock_master 갱신 (sync DB, 블로킹 무시 가능)
+            try:
+                saved = self.db.save_stock_master_batch(price_list)
+                if saved > 0:
+                    logger.info("stock_master 갱신: %d건", saved)
+            except Exception as e:
+                logger.warning("stock_master 저장 실패: %s", e)
+
+            # 1차 필터
+            before_count = len(price_list)
+            price_list = [
+                p for p in price_list
+                if p.get("market_cap", 0) >= SignalConfig.MIN_MARKET_CAP
+                and p.get("trading_value", 0) >= SignalConfig.MIN_TRADING_VALUE
+            ]
+            filtered_out = before_count - len(price_list)
+            if filtered_out > 0:
+                logger.info(
+                    "1차 필터: %d → %d 종목 "
+                    "(시총 %.0f억·거래대금 %.0f억 미달 %d건 제외)",
+                    before_count, len(price_list),
+                    SignalConfig.MIN_MARKET_CAP / 1e8,
+                    SignalConfig.MIN_TRADING_VALUE / 1e8,
+                    filtered_out,
+                )
+            if not price_list:
+                logger.warning("1차 필터 후 남은 종목이 없습니다")
+                return []
+
+            # PER/PBR/EPS/BPS/sector 보강 — 개별 조회 병렬 실행.
+            # aget_all_stock_prices가 아닌 gather를 직접 쓰는 이유:
+            # 보강은 "있으면 좋고 없어도 무방"이라 failure threshold 적용 안 함.
+            logger.info("PER/PBR 보강 조회 시작 (%d 종목)...", len(price_list))
+            tasks = [
+                self.kis.aget_stock_price(p["stock_code"]) for p in price_list
+            ]
+            details = await asyncio.gather(*tasks, return_exceptions=True)
+            enriched = 0
+            for price, detail in zip(price_list, details):
+                if isinstance(detail, Exception):
+                    logger.debug(
+                        "PER/PBR 보강 실패 %s: %s",
+                        price["stock_code"], detail,
+                    )
+                    continue
+                price["per"] = detail.get("per", 0.0)
+                price["pbr"] = detail.get("pbr", 0.0)
+                price["eps"] = detail.get("eps", 0)
+                price["bps"] = detail.get("bps", 0)
+                price["sector"] = detail.get("sector", "기타")
+                enriched += 1
+            logger.info(
+                "PER/PBR 보강 조회 %d/%d 완료",
+                enriched, len(price_list),
+            )
+        else:
+            # === 화~금: 대상 종목만 개별 시세 조회 ===
+            logger.info("대상 %d 종목 개별 시세 조회...", len(target_codes))
+            price_list = await self.kis.aget_all_stock_prices(target_codes)
+            if not price_list:
+                logger.warning("개별 시세 조회 결과 0건")
+                return []
+            logger.info("개별 시세 %d 종목 수집 완료", len(price_list))
+
+            # 종목명 폴백 (sync DB)
+            filled = 0
+            missing = 0
+            for p in price_list:
+                if not p.get("stock_name"):
+                    name = self.db.get_stock_name(p["stock_code"])
+                    if name:
+                        p["stock_name"] = name
+                        filled += 1
+                    else:
+                        missing += 1
+            if filled > 0 or missing > 0:
+                logger.info(
+                    "종목명 stock_master 보강: %d건 채움, %d건 미해결",
+                    filled, missing,
+                )
+
+        return price_list
+
     async def _collect_data(
         self,
         target_codes: Optional[list[str]] = None,
@@ -395,98 +527,23 @@ class AnalysisPipeline:
         Returns:
             tuple: (시세 리스트, 차트 dict, 재무 리스트)
         """
-        if target_codes is None:
-            # === 월요일: 전종목 스캔 ===
-            price_list = self.kis.get_kospi_stock_list()
-
+        async with self.kis:
+            price_list = await self._collect_price_data(target_codes)
             if not price_list:
                 return [], {}, []
 
-            logger.info("코스피 %d 종목 시세 수집 완료", len(price_list))
+            stock_codes = [p["stock_code"] for p in price_list]
 
-            # 종목 마스터 갱신: 업종별 시세 엔드포인트는 종목명을 정상 반환하므로
-            # 이 결과를 stock_master에 누적해 화~금 단일 조회 시 폴백으로 활용한다.
-            try:
-                saved = self.db.save_stock_master_batch(price_list)
-                if saved > 0:
-                    logger.info("stock_master 갱신: %d건", saved)
-            except Exception as e:
-                logger.warning("stock_master 저장 실패: %s", e)
-
-            # 1차 필터: 시총/거래대금 기준 미달 종목 조기 제외
-            before_count = len(price_list)
-            price_list = [
-                p for p in price_list
-                if p.get("market_cap", 0) >= SignalConfig.MIN_MARKET_CAP
-                and p.get("trading_value", 0) >= SignalConfig.MIN_TRADING_VALUE
-            ]
-            filtered_out = before_count - len(price_list)
-            if filtered_out > 0:
-                logger.info(
-                    "1차 필터: %d → %d 종목 (시총 %.0f억·거래대금 %.0f억 미달 %d건 제외)",
-                    before_count, len(price_list),
-                    SignalConfig.MIN_MARKET_CAP / 1e8,
-                    SignalConfig.MIN_TRADING_VALUE / 1e8,
-                    filtered_out,
-                )
-
-            if not price_list:
-                logger.warning("1차 필터 후 남은 종목이 없습니다")
-                return [], {}, []
-
-            # PER/PBR/EPS/BPS/sector 보강: 업종별 시세 API에는 없으므로 개별 조회
-            # (KIS 업종별 시세 API FHPST01710000은 19개 키만 반환, bstp_kor_isnm 없음.
-            #  반면 개별 시세 API FHKST01010100은 sector를 포함하므로 여기서 복사.)
-            logger.info("PER/PBR 보강 조회 시작 (%d 종목)...", len(price_list))
-            for i, price in enumerate(price_list, 1):
-                try:
-                    detail = self.kis.get_stock_price(price["stock_code"])
-                    price["per"] = detail.get("per", 0.0)
-                    price["pbr"] = detail.get("pbr", 0.0)
-                    price["eps"] = detail.get("eps", 0)
-                    price["bps"] = detail.get("bps", 0)
-                    price["sector"] = detail.get("sector", "기타")
-                except Exception as e:
-                    logger.debug("PER/PBR 보강 실패 %s: %s", price["stock_code"], e)
-            logger.info("PER/PBR 보강 조회 %d종목 완료", len(price_list))
-        else:
-            # === 화~금: 대상 종목만 개별 시세 조회 ===
-            logger.info("대상 %d 종목 개별 시세 조회...", len(target_codes))
-            price_list = self.kis.get_all_stock_prices(target_codes)
-
-            if not price_list:
-                logger.warning("개별 시세 조회 결과 0건")
-                return [], {}, []
-
-            logger.info("개별 시세 %d 종목 수집 완료", len(price_list))
-
-            # 종목명 보강: KIS의 단일 시세 엔드포인트(FHKST01010100)는 종목명을
-            # 반환하지 않으므로, 빈 항목은 stock_master에서 lookup해 채운다.
-            filled = 0
-            missing = 0
-            for p in price_list:
-                if not p.get("stock_name"):
-                    name = self.db.get_stock_name(p["stock_code"])
-                    if name:
-                        p["stock_name"] = name
-                        filled += 1
-                    else:
-                        missing += 1
-            if filled > 0 or missing > 0:
-                logger.info(
-                    "종목명 stock_master 보강: %d건 채움, %d건 미해결",
-                    filled, missing,
-                )
-
-        stock_codes = [p["stock_code"] for p in price_list]
-
-        # 일봉 차트 (배치)
-        logger.info("일봉 차트 수집 시작 (%d 종목)...", len(stock_codes))
-        chart_dict = self.kis.get_all_daily_charts(stock_codes, days=60)
-
-        # 투자자별 매매동향 (수급 데이터) - 20일 윈도우 분석을 위해 25일 조회
-        logger.info("수급 데이터 수집 시작 (%d 종목)...", len(stock_codes))
-        investor_dict = self.kis.get_all_investor_trading(stock_codes, days=25)
+            # 일봉 차트 + 수급 데이터 동시 실행 (공용 _limiter가 rate 제어)
+            logger.info(
+                "일봉 차트 + 수급 데이터 동시 수집 (%d 종목)...",
+                len(stock_codes),
+            )
+            chart_task = self.kis.aget_all_daily_charts(stock_codes, days=60)
+            investor_task = self.kis.aget_all_investor_trading(
+                stock_codes, days=25)
+            chart_dict, investor_dict = await asyncio.gather(
+                chart_task, investor_task)
 
         # 수급 데이터를 price_list에 병합
         for price in price_list:

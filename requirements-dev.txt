@@ -1,0 +1,8 @@
+# KOSPI 저평가 기업 분석 시스템 - 개발 의존성
+# 운영 의존성은 requirements.txt 참조
+# 설치: pip install -r requirements.txt -r requirements-dev.txt
+
+# === 테스트 ===
+pytest>=8.0
+pytest-asyncio>=0.23      # async 테스트 runner
+aioresponses>=0.7         # aiohttp 기반 HTTP mock
