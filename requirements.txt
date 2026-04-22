@@ -1,0 +1,27 @@
+# KOSPI 저평가 기업 분석 시스템 - 의존성 목록
+# 설치: pip install -r requirements.txt
+
+# === HTTP 클라이언트 ===
+requests>=2.31.0          # KIS/DART API 동기 호출
+aiohttp>=3.9.0            # 비동기 API 호출 (대량 종목 조회)
+
+# === 데이터 분석 ===
+pandas>=2.1.0             # 재무 데이터 정합 및 스코어링
+numpy>=1.26.0             # 수치 계산
+pyarrow>=14.0.0           # DART 재무제표 parquet 캐싱
+
+# === 기술적 분석 ===
+ta>=0.11.0                # ATR, 이동평균선, 볼린저밴드 등
+
+# === 텔레그램 봇 ===
+python-telegram-bot>=20.7 # 비동기 기반 텔레그램 봇 (v20+)
+
+# === 스케줄러 ===
+APScheduler>=3.10.0       # cron 스타일 작업 스케줄링
+
+# === 설정 관리 ===
+python-dotenv>=1.0.0      # .env 파일에서 환경변수 로드
+
+# === 데이터베이스 ===
+# SQLite는 Python 내장 (별도 설치 불필요)
+# PostgreSQL 확장 시: psycopg2-binary>=2.9.0

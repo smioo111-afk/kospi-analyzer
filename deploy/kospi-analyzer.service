@@ -1,0 +1,29 @@
+[Unit]
+Description=KOSPI 저평가 기업 분석 시스템
+Documentation=https://github.com/your-repo/kospi-analyzer
+After=network.target
+
+[Service]
+Type=simple
+User=kospi
+Group=kospi
+WorkingDirectory=/opt/kospi-analyzer
+ExecStart=/opt/kospi-analyzer/venv/bin/python main.py --bot
+Restart=always
+RestartSec=30
+
+# 환경변수 파일
+EnvironmentFile=/opt/kospi-analyzer/config/.env
+
+# 로그
+StandardOutput=append:/opt/kospi-analyzer/logs/systemd.log
+StandardError=append:/opt/kospi-analyzer/logs/systemd_error.log
+
+# 보안
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/kospi-analyzer/data /opt/kospi-analyzer/logs /opt/kospi-analyzer/token_cache
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  kospi-analyzer:
+    build: .
+    container_name: kospi-analyzer
+    restart: unless-stopped
+    env_file:
+      - config/.env
+    volumes:
+      # DB와 로그를 호스트에 영구 저장
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./token_cache:/app/token_cache
+    environment:
+      - TZ=Asia/Seoul
+      - PYTHONUNBUFFERED=1
+    # 텔레그램 봇 + 스케줄러 모드
+    command: ["--bot"]

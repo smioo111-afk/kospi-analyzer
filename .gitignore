@@ -1,0 +1,36 @@
+# 환경변수 (API Key 포함 - 절대 커밋 금지)
+.env
+config/.env
+
+# 데이터베이스
+*.db
+*.sqlite3
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 로그
+logs/
+*.log
+
+# KIS API 토큰 캐시
+token_cache/
