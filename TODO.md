@@ -27,19 +27,18 @@
   등록일: 2026-04-22
   상태: 열림
 
-[P1][DATA] 생존편향 제거
-  배경: 현재가 조회 실패 종목이 스킵되어 상장폐지 종목 누락.
-  내용: update_performance_tracking에서 조회 실패 시 delisted 플래그와 -100% 수익률로 보정.
-        구현 상세는 docs/survivorship_bias_fix.md 참조.
-  공수: M
-  등록일: 2026-04-22
-  상태: 진행중 (2026-04-22 코드 반영 + 테스트 통과. 운영 DB 적용/봇 재시작/오탐 모니터링 대기.)
-
 [P1][DATA] 룩어헤드 편향 감사
   배경: DART 재무제표는 분기 종료 후 45일 공시.
   내용: 재무 데이터에 rcept_dt 컬럼 보관. 백테스트에서 해당 날짜 이후에만 사용.
   공수: M
   등록일: 2026-04-22
+  상태: 열림
+
+[P1][FEATURE] KOSPI 지수 수집 구현
+  배경: analysis_results.kospi_index 전건 0/NULL. 초과수익 계산 불가.
+  내용: KIS FHPUP02100000 또는 pykrx 사용. 매일 분석 파이프라인 마지막에 저장.
+  공수: S
+  등록일: 2026-04-24
   상태: 열림
 
 [P1][FEATURE] 금융주 섹터 매핑 완성
@@ -151,6 +150,13 @@
   등록일: 2026-04-22
   상태: 열림
 
+[P2][OPS] cascade skip 알림
+  배경: 안전장치로 cascade 스킵 시 로그만 남김. 관측성 부족.
+  내용: cascade skip 발생 시 Telegram WARN 메시지 (종목코드, 예외타입, 실패횟수).
+  공수: S
+  등록일: 2026-04-24
+  상태: 열림
+
 [P2][OPS] WAL 자동 체크포인트
   배경: 2026-04-22 백업 전 WAL 2.1M 누적 발견. main DB는 2주 전 상태.
   내용:
@@ -254,6 +260,18 @@
 ---
 
 ## 완료됨
+
+[P1][DATA] 생존편향 제거
+  배경: 현재가 조회 실패 종목이 스킵되어 상장폐지 종목 누락.
+  내용: update_performance_tracking에서 조회 실패 시 delisted 플래그 + -100%로 보정.
+  완료일: 2026-04-22 최초 구현 / 2026-04-24 안전장치 강화
+  결과:
+    - 2026-04-22: cascade 로직, mark_stock_delisted, 단위 테스트 도입
+    - 2026-04-24: async 리팩터링 이후 _run_sync RuntimeError로 14종목 80건 오탐
+      발생. 원인 수정 (asyncio.to_thread로 sync 래퍼 격리) + 안전장치 2종
+      추가 (RuntimeError 류 cascade 금지, 시총 ≥500B KRW 대형주 화이트리스트)
+      + 복구 도구 (tools/recover_performance_tracking.py) 배포. 오염 80행 전수
+      복구 완료.
 
 [P0][DOC] Project Knowledge 재동기화
   배경: 채팅에 업로드된 파일이 서버 실제 코드와 버전 불일치.
