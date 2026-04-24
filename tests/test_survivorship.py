@@ -74,20 +74,32 @@ class FakeKIS:
 
     prices: {stock_code: [response_sequence]}
       각 호출마다 pop(0). 값이 정수면 성공 응답 반환, "raise"면 예외 발생.
+    exception_cls: "raise" 토큰이 던질 예외 클래스 (기본 ConnectionError).
+      cascade 안전장치 테스트에서 RuntimeError 등 스킵 대상을 주입할 때 사용.
+
+    기본이 ConnectionError인 이유: 운영 환경에서 실제 KIS API 오류는
+    HTTP/네트워크 류이고 RuntimeError는 환경 문제. 안전장치가 RuntimeError를
+    cascade skip 대상으로 두기 때문에, "실제 상장폐지 시나리오"는
+    non-RuntimeError 계열이어야 재현된다.
     """
 
-    def __init__(self, prices: dict) -> None:
+    def __init__(
+        self,
+        prices: dict,
+        exception_cls: type[Exception] = ConnectionError,
+    ) -> None:
         self._prices = {k: list(v) for k, v in prices.items()}
+        self._exception_cls = exception_cls
         self.calls: list[str] = []
 
     def get_stock_price(self, code: str) -> dict:
         self.calls.append(code)
         q = self._prices.get(code, [])
         if not q:
-            raise RuntimeError(f"no more responses for {code}")
+            raise self._exception_cls(f"no more responses for {code}")
         val = q.pop(0)
         if val == "raise":
-            raise RuntimeError("fake network error")
+            raise self._exception_cls("fake network error")
         return {"current_price": val}
 
 
@@ -251,6 +263,125 @@ def test_delisted_stock_is_skipped_in_next_update() -> None:
 
 
 # ================================================================
+# 6. cascade 안전장치: RuntimeError 예외는 cascade 금지
+# ================================================================
+def test_cascade_skipped_on_runtime_error() -> None:
+    """2026-04-24 회귀 사건 재현 방지 테스트.
+
+    async 리팩터링 후 _run_sync가 RuntimeError를 던지는 상황을
+    재현하고, cascade 안전장치가 이를 감지해 상장폐지 판정을
+    하지 않는지 검증한다.
+    """
+    db = _make_db()
+    report_date = _report_date_weeks_ago(5)
+    _seed_report(db, report_date, "111111", 10000, signal="strong_buy")
+
+    fake = FakeKIS(
+        {"111111": ["raise", "raise", "raise"]},
+        exception_cls=RuntimeError,
+    )
+    for _ in range(3):
+        db.update_performance_tracking(fake)
+
+    conn = db._get_conn()
+    row = conn.execute(
+        """SELECT is_delisted, return_1m, consecutive_fetch_failures
+           FROM performance_tracking
+           WHERE stock_code = '111111'"""
+    ).fetchone()
+    assert row is not None, "stub 레코드가 생성되어야"
+    assert row["is_delisted"] == 0, (
+        f"RuntimeError는 cascade 금지 (actual is_delisted={row['is_delisted']})"
+    )
+    assert row["return_1m"] != -100.0, (
+        "cascade 금지 상태에서 return은 오염되지 않음"
+    )
+    assert row["consecutive_fetch_failures"] >= 3, (
+        "카운터는 그대로 누적 (수동 조사용으로 유지)"
+    )
+
+
+# ================================================================
+# 7. cascade 안전장치: 대형주는 화이트리스트
+# ================================================================
+def test_cascade_skipped_on_large_cap() -> None:
+    """시총 ≥ 500B KRW 종목은 실제 API 오류라도 cascade 금지."""
+    db = _make_db()
+    report_date = _report_date_weeks_ago(5)
+    code = "005930"  # 삼성전자 연상
+    _seed_report(db, report_date, code, 70000)
+
+    # stock_scores에 market_cap 주입 (삼성전자급 시총: 500조)
+    conn = db._get_conn()
+    conn.execute(
+        """INSERT INTO stock_scores
+           (analysis_date, stock_code, stock_name, market_cap)
+           VALUES (?, ?, ?, ?)""",
+        (report_date, code, "샘플대형주", 500_000_000_000_000),
+    )
+    conn.commit()
+
+    fake = FakeKIS(
+        {code: ["raise", "raise", "raise"]},
+        exception_cls=ConnectionError,  # 진짜 API 오류
+    )
+    for _ in range(3):
+        db.update_performance_tracking(fake)
+
+    row = conn.execute(
+        """SELECT is_delisted, return_1m, consecutive_fetch_failures
+           FROM performance_tracking
+           WHERE stock_code = ?""",
+        (code,),
+    ).fetchone()
+    assert row is not None
+    assert row["is_delisted"] == 0, (
+        "대형주는 ConnectionError라도 cascade 금지 "
+        f"(actual is_delisted={row['is_delisted']})"
+    )
+    assert row["return_1m"] != -100.0
+
+
+# ================================================================
+# 8. cascade 안전장치: 소형주 + 진짜 API 에러는 여전히 cascade
+# ================================================================
+def test_cascade_still_fires_for_small_cap_real_error() -> None:
+    """안전장치가 과도하게 보수적이지 않은지 확인.
+
+    스킵 리스트 예외가 아니고 시총도 작으면 기존 cascade 동작 유지.
+    """
+    db = _make_db()
+    report_date = _report_date_weeks_ago(5)
+    code = "222222"
+    _seed_report(db, report_date, code, 3000)
+
+    conn = db._get_conn()
+    conn.execute(
+        """INSERT INTO stock_scores
+           (analysis_date, stock_code, stock_name, market_cap)
+           VALUES (?, ?, ?, ?)""",
+        (report_date, code, "소형주", 100_000_000_000),  # 1000억
+    )
+    conn.commit()
+
+    fake = FakeKIS(
+        {code: ["raise", "raise", "raise"]},
+        exception_cls=ConnectionError,
+    )
+    for _ in range(3):
+        db.update_performance_tracking(fake)
+
+    row = conn.execute(
+        """SELECT is_delisted, return_1m
+           FROM performance_tracking
+           WHERE stock_code = ?""",
+        (code,),
+    ).fetchone()
+    assert row["is_delisted"] == 1, "소형주 + 실제 API 에러는 정상 cascade"
+    assert row["return_1m"] == -100.0
+
+
+# ================================================================
 # 메인
 # ================================================================
 def main() -> int:
@@ -259,6 +390,9 @@ def main() -> int:
     test_success_resets_failure_count()
     test_mark_stock_delisted_updates_all_records()
     test_delisted_stock_is_skipped_in_next_update()
+    test_cascade_skipped_on_runtime_error()
+    test_cascade_skipped_on_large_cap()
+    test_cascade_still_fires_for_small_cap_real_error()
 
     print(f"\n{'='*60}")
     print(f"결과: PASS={_pass} FAIL={_fail}")

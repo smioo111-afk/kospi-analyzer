@@ -201,9 +201,9 @@ class AnalysisPipeline:
         logger.info("="*50)
 
         try:
-            # 1. 토큰 확인
+            # 1. 토큰 확인 (async 컨텍스트이므로 acheck_token 사용)
             logger.info("[1/6] KIS API 토큰 확인...")
-            if not self.kis.check_token():
+            if not await self.kis.acheck_token():
                 raise KISAPIError("KIS API 토큰 발급 실패")
             logger.info("[1/6] 토큰 확인 완료 ✅")
 
@@ -387,9 +387,15 @@ class AnalysisPipeline:
                 top_10_with_rank.append(entry)
             self.db.save_daily_report_log(analysis_date, top_10_with_rank)
 
-            # 10. 과거 추천 종목 성과 추적 업데이트
+            # 10. 과거 추천 종목 성과 추적 업데이트.
+            # update_performance_tracking 내부는 sync KIS 래퍼를 호출하는데,
+            # 여기가 async 컨텍스트이므로 직접 호출하면 _run_sync가
+            # RuntimeError를 던진다 (→ cascade 상장폐지 오탐 회귀의 원인).
+            # asyncio.to_thread로 스레드 격리 후 실행한다.
             try:
-                updated = self.db.update_performance_tracking(self.kis)
+                updated = await asyncio.to_thread(
+                    self.db.update_performance_tracking, self.kis
+                )
                 if updated > 0:
                     logger.info("성과 추적 %d건 업데이트 완료", updated)
             except Exception as e:
@@ -626,7 +632,10 @@ async def scheduled_analysis() -> None:
     월요일: 전종목 스캔 (업종별 분할 조회, ~900종목)
     화~금: TOP 50 + 포트폴리오 종목만 업데이트 (개별 시세 조회)
     """
-    if not is_trading_day():
+    # is_trading_day()는 sync KIS 래퍼(check_token, get_stock_price)를 호출한다.
+    # 이벤트 루프 안에서 직접 호출하면 _run_sync가 RuntimeError를 던지므로
+    # to_thread로 스레드 격리한다.
+    if not await asyncio.to_thread(is_trading_day):
         logger.info("오늘은 휴장일입니다. 분석을 건너뜁니다.")
         return
 

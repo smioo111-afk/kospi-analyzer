@@ -19,6 +19,24 @@ from config.settings import DBConfig
 logger = logging.getLogger(__name__)
 
 
+# ================================================================
+# cascade 안전장치 상수
+# ================================================================
+# consecutive_fetch_failures >= 3이어도 아래 조건이면 cascade를 건너뛴다.
+# - 마지막 예외 타입이 환경/런타임 문제 (실제 상장폐지 신호 아님)
+# - 시총이 임계값 이상 (대형주는 수동 검증 요구)
+#
+# 2026-04-24 사건에서 async 리팩터링 후 _run_sync가 RuntimeError를 던져
+# 삼성전자 등 대형주 80건이 오판정된 사례를 재발 방지하기 위함.
+_CASCADE_SKIP_EXCEPTION_NAMES: frozenset[str] = frozenset({
+    "RuntimeError",
+    "CancelledError",
+    "ValueError",
+    "TypeError",
+})
+_LARGE_CAP_THRESHOLD_KRW: int = 500_000_000_000  # 5000억원
+
+
 class Database:
     """SQLite 데이터베이스 관리 클래스.
 
@@ -32,9 +50,16 @@ class Database:
         self._init_tables()
 
     def _get_conn(self) -> sqlite3.Connection:
-        """DB 연결을 반환한다 (없으면 생성)."""
+        """DB 연결을 반환한다 (없으면 생성).
+
+        check_same_thread=False: main.py가 update_performance_tracking을
+        asyncio.to_thread로 워커 스레드에서 돌리므로 스레드 경계를 허용한다.
+        동시 쓰기 경합은 없도록 상위에서 직렬화된다 (WAL + 사이클당 1회).
+        """
         if self._conn is None:
-            self._conn = sqlite3.connect(self.db_path)
+            self._conn = sqlite3.connect(
+                self.db_path, check_same_thread=False
+            )
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
@@ -1198,6 +1223,8 @@ class Database:
 
         # 종목별 현재가 캐시
         price_cache: dict[str, int] = {}
+        # 종목별 마지막 예외 타입명 (cascade 안전장치 판단용)
+        last_exception_by_code: dict[str, str] = {}
 
         for row in rows:
             report_date = row["report_date"]
@@ -1229,6 +1256,7 @@ class Database:
                 except Exception as e:
                     logger.warning("현재가 조회 예외 %s: %s", code, e)
                     price_cache[code] = 0
+                    last_exception_by_code[code] = type(e).__name__
 
             current_price = price_cache.get(code, 0)
 
@@ -1241,9 +1269,11 @@ class Database:
                 new_failures = status["consecutive_fetch_failures"] + 1
 
                 if new_failures >= 3:
-                    # 3회 연속 실패 → 자동 상장폐지 판정.
-                    # 먼저 트리거된 행의 카운터를 갱신 (없으면 stub insert)한 뒤
-                    # 해당 종목의 모든 레코드를 is_delisted=1로 캐스케이드.
+                    # 3회 연속 실패. cascade 전에 안전장치 검사.
+                    last_exc = last_exception_by_code.get(code, "")
+                    skip, reason = self._should_skip_cascade(code, last_exc)
+
+                    # 어떤 경로든 실패 카운터는 최신화.
                     conn.execute(
                         """INSERT INTO performance_tracking
                            (report_date, stock_code, stock_name,
@@ -1261,17 +1291,25 @@ class Database:
                             price_at_report, new_failures, today_str,
                         ),
                     )
-                    logger.error(
-                        "자동 상장폐지 판정: %s (누적 실패 %d회). "
-                        "실제 상장폐지 여부는 사람이 확인 후 필요시 "
-                        "mark_stock_delisted로 재확정 권장.",
-                        code, new_failures,
-                    )
-                    affected = self._cascade_mark_delisted(
-                        code, today_str, conn,
-                    )
-                    delisted_codes.add(code)
-                    updated += affected
+
+                    if skip:
+                        logger.warning(
+                            "cascade 스킵 %s (누적 실패 %d회, 사유: %s). "
+                            "카운터만 유지하고 상장폐지 판정은 미수행.",
+                            code, new_failures, reason,
+                        )
+                    else:
+                        logger.error(
+                            "자동 상장폐지 판정: %s (누적 실패 %d회, "
+                            "마지막 예외=%s). 실제 상장폐지 여부는 사람이 "
+                            "확인 후 필요시 mark_stock_delisted로 재확정 권장.",
+                            code, new_failures, last_exc or "n/a",
+                        )
+                        affected = self._cascade_mark_delisted(
+                            code, today_str, conn,
+                        )
+                        delisted_codes.add(code)
+                        updated += affected
                 else:
                     logger.warning(
                         "현재가 조회 실패 %s (report_date=%s, 누적 실패 %d회)",
@@ -1404,6 +1442,45 @@ class Database:
     # ================================================================
     # 생존편향 제거 (상장폐지 종목 보정)
     # ================================================================
+    def _get_latest_market_cap(self, stock_code: str) -> int:
+        """stock_scores에서 가장 최근 저장된 market_cap을 반환한다.
+
+        cascade 안전장치 (대형주 화이트리스트) 용도. 값이 없으면 0.
+        """
+        try:
+            conn = self._get_conn()
+            row = conn.execute(
+                """SELECT market_cap FROM stock_scores
+                   WHERE stock_code = ? AND market_cap > 0
+                   ORDER BY analysis_date DESC LIMIT 1""",
+                (stock_code,),
+            ).fetchone()
+            return int(row["market_cap"]) if row else 0
+        except sqlite3.Error:
+            return 0
+
+    def _should_skip_cascade(
+        self,
+        stock_code: str,
+        last_exception_name: str,
+    ) -> tuple[bool, str]:
+        """cascade를 건너뛰어야 하는지 판단.
+
+        Returns:
+            (skip, reason). skip=True면 cascade 금지.
+        """
+        if last_exception_name in _CASCADE_SKIP_EXCEPTION_NAMES:
+            return True, (
+                f"런타임 예외 {last_exception_name} — 실제 상장폐지 신호 아님"
+            )
+        market_cap = self._get_latest_market_cap(stock_code)
+        if market_cap >= _LARGE_CAP_THRESHOLD_KRW:
+            return True, (
+                f"대형주 화이트리스트 (시총 {market_cap:,}원 "
+                f"≥ {_LARGE_CAP_THRESHOLD_KRW:,}원)"
+            )
+        return False, ""
+
     def _cascade_mark_delisted(
         self,
         stock_code: str,
