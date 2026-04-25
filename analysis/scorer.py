@@ -429,8 +429,10 @@ class ScoringEngine:
                 "total": roe_s + opr_s + debt_s + cur_s}
 
     def _score_debt(self, ratio: float) -> int:
-        if ratio <= 0:
-            return self.cfg.DEBT_RATIO_MAX_SCORE
+        # ratio == 0(또는 음수)은 데이터 결손 신호로 취급. 한국 상장사에서
+        # 진짜 부채 0인 사례는 사실상 없음. 결손이 만점을 받지 않도록 default.
+        if ratio is None or ratio <= 0:
+            return self.cfg.DEBT_RATIO_DEFAULT_SCORE
         for t, s in self.cfg.DEBT_RATIO_THRESHOLDS:
             if ratio < t:
                 return s
@@ -518,6 +520,10 @@ class ScoringEngine:
         return scores["declining"], "지속 감소"
 
     def _score_growth(self, rate: float, thresholds: list, default: int) -> int:
+        # rate == 0(또는 None)은 데이터 결손 신호로 취급. 임계값 (0.0, 2)와의
+        # 첫 매칭에서 결손이 가산점을 받던 silent fail 차단.
+        if rate is None or rate == 0:
+            return default
         for t, s in thresholds:
             if rate >= t:
                 return s

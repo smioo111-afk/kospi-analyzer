@@ -260,10 +260,10 @@ class DARTClient:
 
         # === 당기 재무제표 ===
         metrics["revenue"] = self._get_account_value(
-            df, "IS", ["매출액", "수익(매출액)", "영업수익"]
+            df, "IS", ["매출액", "매출", "수익(매출액)", "영업수익"]
         )
         metrics["operating_income"] = self._get_account_value(
-            df, "IS", ["영업이익", "영업이익(손실)"]
+            df, "IS", ["영업이익", "영업이익(손실)", "영업손익"]
         )
         metrics["net_income"] = self._get_account_value(
             df, "IS", ["당기순이익", "당기순이익(손실)"]
@@ -315,8 +315,8 @@ class DARTClient:
         # === 전년도 데이터로 성장률 계산 (v2.0 신설) ===
         prev_df = self.get_financial_statements(stock_code, year - 1)
         if prev_df is not None and not prev_df.empty:
-            prev_rev = self._get_account_value(prev_df, "IS", ["매출액", "수익(매출액)", "영업수익"])
-            prev_op = self._get_account_value(prev_df, "IS", ["영업이익", "영업이익(손실)"])
+            prev_rev = self._get_account_value(prev_df, "IS", ["매출액", "매출", "수익(매출액)", "영업수익"])
+            prev_op = self._get_account_value(prev_df, "IS", ["영업이익", "영업이익(손실)", "영업손익"])
             prev_net = self._get_account_value(prev_df, "IS", ["당기순이익", "당기순이익(손실)"])
 
             metrics["prev_revenue"] = prev_rev
@@ -372,8 +372,8 @@ class DARTClient:
             metric: "operating_income" 또는 "revenue"
         """
         account_names = {
-            "operating_income": ["영업이익", "영업이익(손실)"],
-            "revenue": ["매출액", "수익(매출액)", "영업수익"],
+            "operating_income": ["영업이익", "영업이익(손실)", "영업손익"],
+            "revenue": ["매출액", "매출", "수익(매출액)", "영업수익"],
         }
         names = account_names.get(metric, ["매출액"])
 
@@ -451,18 +451,31 @@ class DARTClient:
         Returns:
             int: 금액 (원)
         """
-        filtered = df[df["sj_div"] == sj_div]
-        if filtered.empty:
-            return 0
+        # K-IFRS 단일 포괄손익계산서(CIS)만 제출하는 기업이 다수이므로
+        # IS 호출 시 CIS로 fallback. IS가 비어있지 않으면 IS 우선.
+        candidates: list[str] = [sj_div]
+        if sj_div == "IS":
+            candidates.append("CIS")
 
-        for name in account_names:
-            match = filtered[filtered["account_nm"].str.contains(name, na=False)]
-            if not match.empty:
-                # 당기금액 컬럼
-                amount_col = "thstrm_amount"
-                if amount_col in match.columns:
-                    raw_value = match.iloc[0][amount_col]
-                    return self._parse_amount(raw_value)
+        amount_col = "thstrm_amount"
+        for div in candidates:
+            filtered = df[df["sj_div"] == div]
+            if filtered.empty:
+                continue
+            if amount_col not in filtered.columns:
+                continue
+            # 1단계: 정확 일치 (e.g. "매출"이 "매출원가"에 매칭되는 것을 방지)
+            for name in account_names:
+                match = filtered[filtered["account_nm"] == name]
+                if not match.empty:
+                    return self._parse_amount(match.iloc[0][amount_col])
+            # 2단계: 부분 일치 (e.g. "당기순이익" → "당기순이익(손실)")
+            for name in account_names:
+                match = filtered[
+                    filtered["account_nm"].str.contains(name, na=False, regex=False)
+                ]
+                if not match.empty:
+                    return self._parse_amount(match.iloc[0][amount_col])
         return 0
 
     @staticmethod
