@@ -19,6 +19,19 @@
 
 ## P1 (다음 단계 진입 전)
 
+[P1][BUG] performance_tracking 100% 미수집 (CRIT-3)
+  배경: docs/data_integrity_audit_20260426.md §6 참조. 82건 전수에서
+        price_after_1w/1m/3m/6m/1y 모두 0. last_updated 빈 문자열 80건,
+        2건만 fails 카운터 갱신. 19일 경과한 행도 1주 가격 미수집.
+        백테스트·적중률 분석 자료 자체 부재.
+  내용: update_performance_tracking 호출 경로·실행 이력 재조사.
+        KIS sync 래퍼 호출 결과가 DB에 저장되지 않는 원인 추적.
+        가설: kis_client.get_stock_price가 0 반환하는 케이스 다수, 또는
+        elapsed_days 분기에서 수익률 INSERT 경로 미실행.
+  공수: M
+  등록일: 2026-04-26
+  상태: 열림
+
 [P1][DATA] performance_tracking 실제 적중률 분석
   배경: 백테스트 이전에 지금까지의 신호가 실제로 먹혔는지부터 확인 필요.
   내용: tools/analyze_performance.py 스크립트로 신호별 1m/3m/6m 수익률과 KOSPI 대비 초과수익 계산.
@@ -191,6 +204,41 @@
   등록일: 2026-04-22
   상태: 열림
 
+[P2][BUG] _calc_growth_score 페널티 결손 식별 (MED-5)
+  배경: 감사 보고서 §MED-5. consecutive_loss_years=0이 무손실인지 결손인지
+        구분 안 됨. PL 결손 종목에서 페널티 우회 발생.
+  내용: revenue/total_assets 등 다른 PL/BS 필드 결손 여부와 결합해
+        '결손' 신호를 명시적으로 식별 후 페널티 적용.
+  공수: S
+  등록일: 2026-04-26
+  상태: 열림
+
+[P2][BUG] dividend_yield 결손 28.8% (HIGH-2)
+  배경: 감사 보고서 §HIGH-2. financial_metrics 67/233 결손.
+        DART 배당 API(_get_dividend_yield) 응답 케이스 점검 필요.
+  공수: S
+  등록일: 2026-04-26
+  상태: 열림
+
+[P2][FEATURE] DART 캐시 백필 도구 확장 (HIGH-4)
+  배경: consecutive_*_years, prev_revenue, prev_op 등 추가 필드도
+        캐시(2024 parquet 포함) 기반 백필 가능.
+  내용: tools/backfill_dart_pl.py에 prev 캐시 활용 로직 추가.
+        성장률 재계산 + 연속 적자/감소 연수 보강.
+  공수: S
+  등록일: 2026-04-26
+  상태: 열림
+
+[P2][BUG] 금융주 매출 계정명 매칭 실패
+  배경: 케이뱅크(279570) 등 은행은 "이자수익"을 사용. backfill 결과에서도
+        revenue=0 유지. 후보 리스트 ["매출액","매출","수익(매출액)","영업수익"]
+        에 은행 회계 항목 없음.
+  내용: signals/sector 정보 기반으로 금융주 별도 후보 리스트 분기.
+        예: 은행은 "이자수익" + "수수료수익", 보험은 "수입보험료" 등.
+  공수: S
+  등록일: 2026-04-26
+  상태: 열림
+
 [P2][BUG] signals.py 판정 기준 문서/코드 불일치
   배경: docstring은 종합 >=80 이나 settings.py는 STRONG_BUY_SCORE=75.
   내용: 실제 운영 값 기준으로 docstring 수정.
@@ -260,6 +308,28 @@
 ---
 
 ## 완료됨
+
+[P1][BUG] DART PL 데이터 결손 수정 (CIS fallback) + scorer silent fail
+  배경: financial_metrics(2025 annual) 233건 중 180건(77%) 매출/영업이익/
+        순이익 0. 원인: _get_account_value가 sj_div='IS'만 필터링.
+        K-IFRS 단일 포괄손익계산서(CIS)만 제출하는 기업의 PL 미추출.
+        부수 발견: _score_growth(0)=2점, _score_debt(0)=MAX 5점 silent fail.
+  내용:
+    1) IS → CIS fallback (정확 일치 우선, 부분 일치 fallback)
+    2) revenue/op_income 후보 리스트에 K-IFRS 변형('매출','영업손익') 추가
+    3) _score_growth/debt가 0/None을 명시적 결손 처리 (가산점 차단)
+    4) tools/backfill_dart_pl.py: 캐시 기반 PL 백필
+    5) 22개 단위 테스트 (dart 9 + scorer 13)
+  완료일: 2026-04-26
+  결과:
+    - PR fe236bc main 머지 (squash)
+    - 백필 168행 적용 → 결손율 77% → 4.3% (10건만 잔존, 우선주/잘못된 코드)
+    - 표본 검증: 023530 매출 13.7조 / SK하이닉스 ROE 35.59% / 카카오 매출 8.1조
+    - silent fail 시뮬레이션: delta>0 0건(회귀 없음), 평균 -3.66점 가산점 회수
+    - 봇 재시작 완료. 다음 사이클(15:40 또는 월요일)부터 새 점수 자동 반영
+  관련 문서:
+    - docs/dart_pl_loss_investigation.md (조사)
+    - docs/data_integrity_audit_20260426.md (16개 이슈 분류 + 시뮬레이션)
 
 [P1][DATA] 생존편향 제거
   배경: 현재가 조회 실패 종목이 스킵되어 상장폐지 종목 누락.
