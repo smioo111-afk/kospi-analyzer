@@ -272,17 +272,14 @@ class MessageFormatter:
         stoploss: Optional[dict[str, Any]] = None,
         history: Optional[list[dict[str, Any]]] = None,
     ) -> str:
-        """개별 종목 상세 분석 결과를 포맷팅한다.
+        """개별 종목 상세 분석 결과를 v3 5카테고리로 포맷팅한다.
 
         텔레그램 /stock 명령어 응답용.
 
         Args:
-            stock: 종목 스코어 데이터
-            stoploss: 손절 정보
+            stock: 종목 스코어 데이터 (stock_scores + daily_report_log merge 후)
+            stoploss: 손절 정보 (stock['stoploss_price']가 우선)
             history: 최근 스코어 이력
-
-        Returns:
-            str: 포맷팅된 메시지
         """
         code = stock.get("stock_code", "")
         name = stock.get("stock_name", "")
@@ -290,39 +287,145 @@ class MessageFormatter:
         lines = [
             f"📈 {self._format_name_code(name, code)} 상세 분석",
             "",
-            f"종합점수: {stock.get('total_score', 0)}/100 | {stock.get('signal_label', '')}",
-            "",
-            "── 가치투자 ──",
-            f"  PER: {stock.get('per', 0)} | PBR: {stock.get('pbr', 0)}",
-            f"  배당수익률: {stock.get('dividend_yield', 0)}%",
-            f"  가치 점수: {stock.get('value_score', 0)}/40",
-            "",
-            "── 재무건전성 ──",
-            f"  ROE: {stock.get('roe', 0)}%",
-            f"  영업이익률: {stock.get('operating_margin', 0)}%",
-            f"  부채비율: {stock.get('debt_ratio', 0)}%",
-            f"  재무 점수: {stock.get('financial_score', 0)}/35",
-            "",
-            "── 모멘텀 ──",
-            f"  모멘텀 점수: {stock.get('momentum_score', 0)}/25",
-            "",
-            f"현재가: {stock.get('current_price', 0):,}원",
-            f"시가총액: {self._format_market_cap(stock.get('market_cap', 0))}",
+            f"종합점수: {stock.get('total_score', 0)}/100 | "
+            f"{stock.get('signal_label', '')}",
         ]
 
-        # 손절 정보
-        if stoploss:
+        reason = stock.get("reason", "")
+        if reason:
+            lines.append(f"사유: {reason}")
+        lines.append("")
+
+        # ── 가치 (30) ──
+        lines.append("── 가치 (30) ──")
+        lines.append(
+            f"  PER: {self._fmt_num(stock.get('per'))} | "
+            f"PBR: {self._fmt_num(stock.get('pbr'))} | "
+            f"배당: {self._fmt_pct(stock.get('dividend_yield'))}"
+        )
+        peg = stock.get("peg")
+        ev = stock.get("ev_ebitda")
+        psr = stock.get("psr")
+        ext = []
+        if peg is not None:
+            ext.append(f"PEG: {self._fmt_num(peg)}")
+        if ev is not None:
+            ext.append(f"EV/EBITDA: {self._fmt_num(ev)}")
+        if psr is not None:
+            ext.append(f"PSR: {self._fmt_num(psr)}")
+        if ext:
+            lines.append("  " + " | ".join(ext))
+        lines.append(f"  점수: {stock.get('value_score', 0)}/30")
+        lines.append("")
+
+        # ── 재무 (20) ──
+        lines.append("── 재무 (20) ──")
+        lines.append(
+            f"  ROE: {self._fmt_pct(stock.get('roe'))} | "
+            f"영업이익률: {self._fmt_pct(stock.get('operating_margin'))}"
+        )
+        lines.append(
+            f"  부채비율: {self._fmt_pct(stock.get('debt_ratio'))}"
+        )
+        lines.append(f"  점수: {stock.get('financial_score', 0)}/20")
+        lines.append("")
+
+        # ── 성장 (20) — daily_report_log 또는 top_10_json 보강분 ──
+        rev_g = stock.get("revenue_growth")
+        op_g = stock.get("op_income_growth")
+        growth_score = stock.get("growth_score")
+        lines.append("── 성장 (20) ──")
+        if rev_g is None and op_g is None and growth_score is None:
+            lines.append("  데이터 없음 (TOP 10 진입 이력 없음)")
+        else:
+            lines.append(
+                f"  매출 성장: {self._fmt_pct(rev_g)} | "
+                f"영업이익 성장: {self._fmt_pct(op_g)}"
+            )
+            if growth_score is not None:
+                lines.append(f"  점수: {growth_score}/20")
+        lines.append("")
+
+        # ── 모멘텀 (20) ──
+        lines.append("── 모멘텀 (20) ──")
+        f5 = stock.get("foreign_net_buy_5d")
+        f20 = stock.get("foreign_net_buy_20d")
+        i5 = stock.get("institutional_net_buy_5d")
+        i20 = stock.get("institutional_net_buy_20d")
+        if f5 is not None or f20 is not None:
+            lines.append(
+                f"  수급(외/기 5d): {self._fmt_signed(f5)} / "
+                f"{self._fmt_signed(i5)}"
+            )
+            lines.append(
+                f"  수급(외/기 20d): {self._fmt_signed(f20)} / "
+                f"{self._fmt_signed(i20)}"
+            )
+        else:
+            f_days = stock.get("foreign_net_buy_days")
+            i_days = stock.get("institutional_net_buy_days")
+            if f_days is not None or i_days is not None:
+                lines.append(
+                    f"  수급(누적일): 외국인 {self._fmt_signed(f_days)} | "
+                    f"기관 {self._fmt_signed(i_days)}"
+                )
+            else:
+                lines.append("  수급 데이터 없음")
+        w52 = stock.get("week52_position")
+        if w52 is not None:
+            lines.append(f"  52주 위치: {self._fmt_num(w52)}%")
+        lines.append(f"  점수: {stock.get('momentum_score', 0)}/20")
+        lines.append("")
+
+        # ── 퀄리티 (10) ──
+        lines.append("── 퀄리티 (10) ──")
+        fcf_y = stock.get("fcf_yield")
+        if fcf_y is not None:
+            lines.append(f"  FCF 수익률: {self._fmt_pct(fcf_y)}")
+        quality_score = stock.get("quality_score")
+        if quality_score is not None:
+            lines.append(f"  점수: {quality_score}/10")
+        else:
+            lines.append("  데이터 없음")
+        lines.append("")
+
+        # 시세·시총
+        lines.append(f"현재가: {stock.get('current_price', 0):,}원")
+        lines.append(
+            f"시가총액: {self._format_market_cap(stock.get('market_cap', 0))}"
+        )
+
+        # 적정주가
+        fair_low = stock.get("fair_value_low") or 0
+        fair_high = stock.get("fair_value_high") or 0
+        if fair_low > 0 and fair_high > 0:
+            gap = stock.get("fair_value_gap", 0)
+            if gap < 0:
+                tag = f"({gap}% 저평가)"
+            elif gap > 0:
+                tag = f"(+{gap}% 고평가)"
+            else:
+                tag = "(적정)"
+            lines.append(
+                f"적정주가: {fair_low:,}~{fair_high:,}원 {tag}"
+            )
+
+        # 손절 (stock dict에 저장된 값 우선, 없으면 인자 stoploss 사용)
+        sl_price = stock.get("stoploss_price") or 0
+        sl_pct = stock.get("stoploss_pct") or 0
+        if sl_price > 0:
+            lines.append(f"손절라인: {sl_price:,}원 ({sl_pct}%)")
+        elif stoploss:
             lines.extend([
                 "",
                 "── 손절 라인 ──",
-                f"  ATR({stoploss.get('atr', 0):,.0f}) × {stoploss.get('multiplier', 2.0)}배",
+                f"  ATR({stoploss.get('atr', 0):,.0f}) × "
+                f"{stoploss.get('multiplier', 2.0)}배",
                 f"  손절가: {stoploss.get('effective_stoploss', 0):,}원 "
                 f"({stoploss.get('effective_stoploss_pct', 0)}%)",
             ])
-            warns = stoploss.get("warnings", [])
-            if warns:
-                for w in warns:
-                    lines.append(f"  ⚠️ {w}")
+            for w in stoploss.get("warnings", []):
+                lines.append(f"  ⚠️ {w}")
 
         # 이력
         if history and len(history) > 1:
@@ -330,7 +433,8 @@ class MessageFormatter:
             for h in history[:5]:
                 lines.append(
                     f"  {h.get('analysis_date', '')}: "
-                    f"{h.get('total_score', 0)}점 {h.get('signal_label', '')}"
+                    f"{h.get('total_score', 0)}점 "
+                    f"{h.get('signal_label', '')}"
                 )
 
         lines.extend([
@@ -339,6 +443,42 @@ class MessageFormatter:
         ])
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _fmt_num(v: Any) -> str:
+        if v is None:
+            return "—"
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return "—"
+        if f == 0:
+            return "—"
+        return f"{f:,.2f}".rstrip("0").rstrip(".") or "0"
+
+    @staticmethod
+    def _fmt_pct(v: Any) -> str:
+        if v is None:
+            return "—"
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return "—"
+        if f == 0:
+            return "—"
+        return f"{f:.2f}%"
+
+    @staticmethod
+    def _fmt_signed(v: Any) -> str:
+        if v is None:
+            return "—"
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return "—"
+        if f == 0:
+            return "0"
+        return f"{f:+g}"
 
     # ================================================================
     # 이력 리포트

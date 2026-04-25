@@ -1145,6 +1145,23 @@ class Database:
         logger.info("리포트 로그 %d건 저장 (%s)", count, report_date)
         return count
 
+    def get_latest_report_log_for_stock(
+        self, stock_code: str,
+    ) -> Optional[dict[str, Any]]:
+        """daily_report_log에서 특정 종목의 가장 최근 행을 조회한다.
+
+        TOP 10에 들었던 종목에 한해 v3 카테고리 점수, 적정주가, 수급 등
+        확장 필드를 보강하기 위해 사용된다. 없으면 None.
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            """SELECT * FROM daily_report_log
+               WHERE stock_code = ?
+               ORDER BY report_date DESC LIMIT 1""",
+            (stock_code,),
+        ).fetchone()
+        return dict(row) if row else None
+
     def get_report_log(
         self, report_date: Optional[str] = None, days: int = 30,
     ) -> list[dict[str, Any]]:

@@ -227,6 +227,13 @@ class KOSPIBot:
             )
             return
 
+        # daily_report_log에 TOP 10 진입 이력이 있으면 v3 확장 필드(성장/퀄리티
+        # 점수, 적정주가, 수급)를 보강한다. score 키가 우선이라 기본 v1 컬럼은
+        # stock_scores 값이 유지된다.
+        v3_log = self.db.get_latest_report_log_for_stock(stock_code)
+        if v3_log:
+            score = {**v3_log, **score}
+
         history_data = self.db.get_stock_history(stock_code, days=5)
 
         msg = self.formatter.format_stock_detail(
