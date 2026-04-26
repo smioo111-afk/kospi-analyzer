@@ -293,7 +293,19 @@ class AnalysisPipeline:
             prev_result = self.db.get_latest_result()
             prev_top_10 = prev_result.get("top_10", []) if prev_result else []
 
-            # 7. DB 저장
+            # 7. KOSPI 지수 + 외국인 순매수 합계 (analysis_results용)
+            try:
+                kospi_result = await self.kis.aget_kospi_index()
+                kospi_index = kospi_result.get("index", 0.0)
+            except Exception as e:
+                logger.warning("KOSPI 지수 수집 실패: %s", e)
+                kospi_index = 0.0
+            foreign_net_buy_total = sum(
+                int(s.get("foreign_net_buy_20d", 0) or 0)
+                for s in all_signals
+            )
+
+            # 8. DB 저장
             logger.info("[6/6] 결과 저장 + 텔레그램 발송...")
             self.history.save_daily_result(
                 analysis_date=analysis_date,
@@ -302,6 +314,8 @@ class AnalysisPipeline:
                 all_signals=all_signals,
                 stats=stats,
                 stoploss_map=stoploss_map,
+                kospi_index=kospi_index,
+                foreign_net_buy=foreign_net_buy_total,
             )
 
             # 8. 포트폴리오 종목 스코어 매핑

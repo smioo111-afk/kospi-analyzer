@@ -398,6 +398,79 @@ class KISClient:
             logger.warning("종목 %s 투자자 매매동향 조회 실패: %s", stock_code, e)
             return self._empty_investor_data(stock_code)
 
+    async def aget_kospi_daily_index(
+        self,
+        days: int = 30,
+        end_date: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """KOSPI 종합지수 일자별 OHLCV 조회 (백필용).
+
+        KIS API: inquire-daily-indexchartprice (TR FHKUP03500100), iscd '0001'.
+
+        Returns:
+            list[dict]: [{"date": "YYYY-MM-DD", "close": float}, ...] 최신순.
+        """
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (
+            datetime.now() - timedelta(days=days + 10)
+        ).strftime("%Y%m%d")
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "U",
+            "FID_INPUT_ISCD": "0001",
+            "FID_INPUT_DATE_1": start_date,
+            "FID_INPUT_DATE_2": end_date,
+            "FID_PERIOD_DIV_CODE": "D",
+        }
+        try:
+            data = await self._request_get(
+                path="/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice",
+                tr_id="FHKUP03500100",
+                params=params,
+            )
+        except KISAPIError as e:
+            logger.warning("KOSPI 일자별 지수 조회 실패: %s", e)
+            return []
+        out: list[dict[str, Any]] = []
+        for it in data.get("output2", []) or []:
+            d = it.get("stck_bsop_date", "")
+            if not d:
+                continue
+            iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+            close = self._safe_float(it.get("bstp_nmix_prpr", "0"))
+            if close > 0:
+                out.append({"date": iso, "close": close})
+        return out[:days]
+
+    async def aget_kospi_index(self) -> dict[str, Any]:
+        """KOSPI 종합지수 현재가를 조회한다 (async).
+
+        KIS API: inquire-index-price (TR FHPUP02100000), iscd '0001'.
+
+        Returns:
+            dict: {"index": float, "change": float, "change_rate": float}
+                  실패 또는 미응답 시 0.0 들어감.
+        """
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "U",  # 업종 지수
+            "FID_INPUT_ISCD": "0001",       # KOSPI 종합지수
+        }
+        try:
+            data = await self._request_get(
+                path="/uapi/domestic-stock/v1/quotations/inquire-index-price",
+                tr_id="FHPUP02100000",
+                params=params,
+            )
+        except KISAPIError as e:
+            logger.warning("KOSPI 지수 조회 실패: %s", e)
+            return {"index": 0.0, "change": 0.0, "change_rate": 0.0}
+        out = data.get("output", {}) or {}
+        return {
+            "index": self._safe_float(out.get("bstp_nmix_prpr", "0")),
+            "change": self._safe_float(out.get("bstp_nmix_prdy_vrss", "0")),
+            "change_rate": self._safe_float(out.get("prdy_ctrt", "0")),
+        }
+
     async def aget_kospi_stock_list(self) -> list[dict[str, Any]]:
         """코스피 전종목 현재가 조회 (async).
 
@@ -788,6 +861,17 @@ class KISClient:
     def get_kospi_stock_list(self) -> list[dict[str, Any]]:
         return _run_sync(
             self._with_session(self.aget_kospi_stock_list))
+
+    def get_kospi_index(self) -> dict[str, Any]:
+        return _run_sync(
+            self._with_session(self.aget_kospi_index))
+
+    def get_kospi_daily_index(
+        self, days: int = 30, end_date: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        return _run_sync(
+            self._with_session(
+                self.aget_kospi_daily_index, days, end_date))
 
     def get_all_stock_prices(
         self, stock_codes: list[str],

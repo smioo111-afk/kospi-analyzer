@@ -64,6 +64,24 @@ def _price_response(code: str = "005930", price: int = 70000) -> dict:
     }
 
 
+def _kospi_index_url() -> str:
+    return (f"{BASE}/uapi/domestic-stock/v1/quotations/inquire-index-price"
+            "?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=0001")
+
+
+def _kospi_index_response(price: float = 2700.5,
+                          change: float = -3.2,
+                          rate: float = -0.12) -> dict:
+    return {
+        "rt_cd": "0",
+        "output": {
+            "bstp_nmix_prpr": f"{price}",
+            "bstp_nmix_prdy_vrss": f"{change}",
+            "prdy_ctrt": f"{rate}",
+        },
+    }
+
+
 # ================================================================
 # 1. 단건 조회 성공
 # ================================================================
@@ -237,3 +255,45 @@ def test_env_var_overrides_default_rate(monkeypatch):
     assert _default_rate_limit() == 15
     monkeypatch.delenv("KIS_RATE_LIMIT_PER_SEC", raising=False)
     assert _default_rate_limit() == 15
+
+
+# ================================================================
+# 10. KOSPI 지수 조회 (D-1)
+# ================================================================
+@pytest.mark.asyncio
+async def test_kospi_index_fetch_success():
+    with aioresponses() as m:
+        m.get(_kospi_index_url(),
+              payload=_kospi_index_response(2700.5, -3.2, -0.12))
+        async with KISClient(rate_limit_per_sec=100) as kis:
+            _install_fake_token(kis)
+            result = await kis.aget_kospi_index()
+    assert result["index"] == 2700.5
+    assert result["change"] == -3.2
+    assert result["change_rate"] == -0.12
+
+
+@pytest.mark.asyncio
+async def test_kospi_index_failure_returns_zero():
+    """KIS API 실패 시 0.0으로 폴백 (호출 측에서 분석 중단 방지)."""
+    with aioresponses() as m:
+        m.get(_kospi_index_url(),
+              payload={"rt_cd": "1", "msg1": "fail"},
+              repeat=True)
+        async with KISClient(rate_limit_per_sec=100) as kis:
+            _install_fake_token(kis)
+            result = await kis.aget_kospi_index()
+    assert result == {"index": 0.0, "change": 0.0, "change_rate": 0.0}
+
+
+@pytest.mark.asyncio
+async def test_kospi_index_empty_output_safe():
+    """output이 비어있어도 0.0 반환."""
+    with aioresponses() as m:
+        m.get(_kospi_index_url(),
+              payload={"rt_cd": "0", "output": {}})
+        async with KISClient(rate_limit_per_sec=100) as kis:
+            _install_fake_token(kis)
+            result = await kis.aget_kospi_index()
+    assert result["index"] == 0.0
+    assert result["change"] == 0.0
