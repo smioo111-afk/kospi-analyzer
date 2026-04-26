@@ -30,6 +30,24 @@ class DARTAPIError(Exception):
     """DART API 호출 에러."""
 
 
+# 은행/은행지주 화이트리스트 — sector='금융' 안에서 금융업 매출 합산을 적용한다.
+# (sector='금융'에는 일반 지주회사도 포함되므로 정확한 분기 위해 코드로 식별.)
+# TODO: 신규 종목 상장/지정 시 갱신 필요.
+_BANK_HOLDING_CODES: frozenset[str] = frozenset({
+    "055550",  # 신한지주
+    "105560",  # KB금융
+    "086790",  # 하나금융지주
+    "316140",  # 우리금융지주
+    "024110",  # 기업은행
+    "279570",  # 케이뱅크
+    "138040",  # 메리츠금융지주
+    "139130",  # iM금융지주
+    "175330",  # JB금융지주
+    "071050",  # 한국금융지주
+    "138930",  # BNK금융지주
+})
+
+
 class DARTClient:
     """DART OpenAPI 클라이언트.
 
@@ -232,16 +250,88 @@ class DARTClient:
     # ================================================================
     # 재무 지표 추출
     # ================================================================
+    def _calc_financial_revenue(
+        self,
+        df: pd.DataFrame,
+        sector: Optional[str],
+        stock_code: str,
+    ) -> Optional[int]:
+        """금융주(보험/증권/은행지주)의 매출은 단일 라인이 아닌 합산이다.
+
+        반환값:
+          - 합산 매출(int): sector가 금융업이고 합산이 0보다 클 때
+          - None: 일반 종목 → 호출 측이 기본 룰 사용
+
+        분기:
+          - 보험: 보험수익 + 투자영업수익 (IFRS4 일반 손보)
+                  실패 시 보험서비스수익 + 이자수익 + 수수료수익 (IFRS17 생보)
+          - 증권: 영업수익 단일 (한화투자/미래에셋/키움 등 정상)
+                  실패 시 수수료수익 + 이자수익 + 외환거래이익 (NH/삼성증권 등)
+          - 금융 + BANK_HOLDING_CODES: 이자수익 + 수수료수익 + 보험수익(보험 자회사)
+          - 금융 + BANK_HOLDING_CODES 외: None (일반 지주 회귀 방지)
+          - 그 외 sector: None
+        """
+        if not sector:
+            return None
+
+        def exact(name: str) -> int:
+            """sj_div=IS/CIS에서 account_nm 정확 일치 첫 행의 thstrm_amount."""
+            sub = df[df["sj_div"].isin(["IS", "CIS"])]
+            if "thstrm_amount" not in sub.columns:
+                return 0
+            m = sub[sub["account_nm"] == name]
+            if m.empty:
+                return 0
+            return self._parse_amount(m.iloc[0]["thstrm_amount"])
+
+        if sector == "보험":
+            ifrs4 = exact("보험수익") + exact("투자영업수익")
+            if ifrs4 > 0:
+                return ifrs4
+            # IFRS17 패턴 (예: 삼성생명)
+            ifrs17 = (
+                exact("보험서비스수익") + exact("이자수익") + exact("수수료수익")
+            )
+            return ifrs17 if ifrs17 > 0 else None
+
+        if sector == "증권":
+            op_rev = exact("영업수익")
+            if op_rev > 0:
+                return op_rev
+            # NH투자증권/삼성증권 등: 영업수익 라벨 부재 시 합산
+            comp = (
+                exact("수수료수익")
+                + exact("이자수익")
+                + exact("외환거래이익")
+            )
+            return comp if comp > 0 else None
+
+        if sector == "금융" and stock_code in _BANK_HOLDING_CODES:
+            comp = (
+                exact("이자수익")
+                + exact("수수료수익")
+                + exact("보험수익")  # 은행지주에 보험 자회사 있을 때
+            )
+            return comp if comp > 0 else None
+
+        return None
+
     def extract_financial_metrics(
-        self, stock_code: str, year: Optional[int] = None
+        self,
+        stock_code: str,
+        year: Optional[int] = None,
+        sector: Optional[str] = None,
     ) -> dict[str, Any]:
         """재무제표에서 분석에 필요한 지표를 추출한다 (v2.0).
 
         v2.0 추가: 매출/이익 성장률, 전년도 대비, 연속 감소 연수
+        v3.x 추가: sector 인자 — 금융주(보험/증권/은행지주) 매출 합산 분기.
 
         Args:
             stock_code: 종목코드
             year: 사업연도
+            sector: 업종 라벨 (KIS bstp_kor_isnm). 보험/증권/금융이면
+                    sector별 합산 룰로 매출을 산출한다. None이면 일반 룰.
 
         Returns:
             dict: 재무 지표 (성장률 포함)
@@ -259,9 +349,14 @@ class DARTClient:
         }
 
         # === 당기 재무제표 ===
-        metrics["revenue"] = self._get_account_value(
-            df, "IS", ["매출액", "매출", "수익(매출액)", "영업수익"]
-        )
+        # sector 분기로 금융주 매출은 합산. 일반 종목/sector None은 기본 룰.
+        fin_rev = self._calc_financial_revenue(df, sector, stock_code)
+        if fin_rev is not None:
+            metrics["revenue"] = fin_rev
+        else:
+            metrics["revenue"] = self._get_account_value(
+                df, "IS", ["매출액", "매출", "수익(매출액)", "영업수익"]
+            )
         metrics["operating_income"] = self._get_account_value(
             df, "IS", ["영업이익", "영업이익(손실)", "영업손익", "영업손실"]
         )
@@ -560,13 +655,18 @@ class DARTClient:
     # 대량 배치 조회
     # ================================================================
     def get_all_financial_metrics(
-        self, stock_codes: list[str], year: Optional[int] = None
+        self,
+        stock_codes: list[str],
+        year: Optional[int] = None,
+        sector_map: Optional[dict[str, str]] = None,
     ) -> list[dict[str, Any]]:
         """여러 종목의 재무 지표를 배치 조회한다.
 
         Args:
             stock_codes: 종목코드 리스트
             year: 사업연도
+            sector_map: {stock_code: sector(KIS bstp_kor_isnm)}. 금융주(보험/
+                        증권/은행지주)의 매출 합산 분기에 사용. None이면 일반 룰.
 
         Returns:
             list[dict]: 종목별 재무 지표
@@ -575,6 +675,7 @@ class DARTClient:
         total = len(stock_codes)
         self._cache_hit = 0
         self._cache_miss = 0
+        sm = sector_map or {}
 
         for idx, code in enumerate(stock_codes, 1):
             if self._api_call_count >= DARTConfig.DAILY_CALL_LIMIT:
@@ -582,7 +683,9 @@ class DARTClient:
                 break
 
             try:
-                metrics = self.extract_financial_metrics(code, year)
+                metrics = self.extract_financial_metrics(
+                    code, year, sector=sm.get(code),
+                )
                 results.append(metrics)
 
                 if idx % 50 == 0:

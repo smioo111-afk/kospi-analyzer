@@ -53,8 +53,18 @@ def _format_amount(v: int) -> str:
     return f"{v:,}"
 
 
-def _extract_from_cache(client: DARTClient, df: pd.DataFrame) -> dict[str, int]:
-    rev = client._get_account_value(df, "IS", REV_NAMES)
+def _extract_from_cache(
+    client: DARTClient,
+    df: pd.DataFrame,
+    sector: str = "",
+    stock_code: str = "",
+) -> dict[str, int]:
+    # 금융주(보험/증권/은행지주)는 합산 매출. 일반은 _get_account_value 기본.
+    fin_rev = client._calc_financial_revenue(df, sector or None, stock_code)
+    if fin_rev is not None:
+        rev = fin_rev
+    else:
+        rev = client._get_account_value(df, "IS", REV_NAMES)
     op = client._get_account_value(df, "IS", OP_NAMES)
     ni = client._get_account_value(df, "IS", NI_NAMES)
     dep = client._get_account_value(df, "IS", DEP_NAMES)
@@ -82,6 +92,11 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="실제 DB 갱신")
     parser.add_argument("--db", default=DB_PATH)
     parser.add_argument("--cache", default=str(CACHE_DIR))
+    parser.add_argument(
+        "--include-financial", action="store_true",
+        help="금융주(보험/증권/은행지주) sector 분기 합산 매출 적용. "
+             "WHERE 조건도 확장하여 부분 결손(매출만 0) 행도 대상으로 함.",
+    )
     args = parser.parse_args()
 
     cache_dir = Path(args.cache)
@@ -93,21 +108,38 @@ def main() -> int:
     conn = sqlite3.connect(args.db)
     conn.row_factory = sqlite3.Row
 
-    rows = conn.execute(
-        """SELECT * FROM financial_metrics
-           WHERE year=? AND quarter='annual'
-             AND revenue=0 AND operating_income=0 AND net_income=0""",
-        (args.year,),
-    ).fetchall()
+    if args.include_financial:
+        # 금융주는 매출이 합산 라인이라 영업이익/순이익이 정상이어도 매출만 결손인 케이스가 다수.
+        # WHERE 완화: revenue=0이거나 (sector가 금융업이고 revenue가 합산 후 더 큼).
+        # 단순화: 금융주 모든 행 + 일반 결손 행을 포함.
+        rows = conn.execute(
+            """SELECT * FROM financial_metrics
+               WHERE year=? AND quarter='annual'
+                 AND (
+                   (revenue=0 AND operating_income=0 AND net_income=0)
+                   OR sector IN ('보험','증권','금융')
+                 )""",
+            (args.year,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT * FROM financial_metrics
+               WHERE year=? AND quarter='annual'
+                 AND revenue=0 AND operating_income=0 AND net_income=0""",
+            (args.year,),
+        ).fetchall()
 
-    print(f"DB 결손(전부 0) 행 수: {len(rows)} (year={args.year}, quarter=annual)")
+    print(f"DB 대상 행 수: {len(rows)} (year={args.year}, quarter=annual, "
+          f"include_financial={args.include_financial})")
 
     affected: list[dict[str, Any]] = []
     no_cache: list[str] = []
     still_zero: list[str] = []
+    no_change: list[str] = []
 
     for r in rows:
         code = r["stock_code"]
+        sector = r["sector"] or ""
         path = cache_dir / f"{code}_{args.year}_annual.parquet"
         if not path.exists():
             no_cache.append(code)
@@ -120,7 +152,7 @@ def main() -> int:
         if df.empty:
             still_zero.append(code)
             continue
-        new = _extract_from_cache(client, df)
+        new = _extract_from_cache(client, df, sector=sector, stock_code=code)
         if new["revenue"] == 0 and new["operating_income"] == 0 and new["net_income"] == 0:
             still_zero.append(code)
             continue
@@ -129,14 +161,29 @@ def main() -> int:
         new_roe = _calc_ratio(new["net_income"], equity)
         new_opm = _calc_ratio(new["operating_income"], new["revenue"])
 
+        before = {
+            "revenue": int(r["revenue"] or 0),
+            "operating_income": int(r["operating_income"] or 0),
+            "net_income": int(r["net_income"] or 0),
+            "ebitda": int(r["ebitda"] or 0),
+        }
+        after_pl = {
+            "revenue": new["revenue"],
+            "operating_income": new["operating_income"],
+            "net_income": new["net_income"],
+            "ebitda": new["ebitda"],
+        }
+        # 변화 없는 행은 affected에서 제외 (일반 지주/비금융 회귀 방지 검증).
+        if before == after_pl:
+            no_change.append(code)
+            continue
+
         affected.append({
             "code": code,
             "name": _lookup_name(conn, code),
+            "sector": sector,
             "before": {
-                "revenue": int(r["revenue"] or 0),
-                "operating_income": int(r["operating_income"] or 0),
-                "net_income": int(r["net_income"] or 0),
-                "ebitda": int(r["ebitda"] or 0),
+                **before,
                 "roe": float(r["roe"] or 0.0),
                 "operating_margin": float(r["operating_margin"] or 0.0),
             },
@@ -148,12 +195,14 @@ def main() -> int:
         })
 
     print(f"  → 캐시로 보강 가능: {len(affected)}개")
+    print(f"  → 변경 없음 (이미 정상 또는 룰 동일): {len(no_change)}개")
     print(f"  → 캐시 없음(다음 수집 사이클 필요): {len(no_cache)}개")
     print(f"  → 캐시는 있으나 재추출도 0(BS만 있는 비영업회사 등): {len(still_zero)}개")
 
     print("\n=== 표본 (앞 8개) ===")
     for a in affected[:8]:
-        print(f"  [{a['code']}] {a['name']}")
+        sec_tag = f" ({a['sector']})" if a.get('sector') else ""
+        print(f"  [{a['code']}] {a['name']}{sec_tag}")
         b, n = a["before"], a["after"]
         print(
             f"    revenue:  {_format_amount(b['revenue']):>12s} → {_format_amount(n['revenue']):>12s}"

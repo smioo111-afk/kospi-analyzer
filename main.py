@@ -604,10 +604,18 @@ class AnalysisPipeline:
             db_hit, len(stock_codes), len(api_codes),
         )
 
+        # KIS sector 맵을 먼저 만들어서 DART 호출에도 전달.
+        # 금융주(보험/증권/은행지주) 매출 합산 분기에 필요.
+        price_sector_map = {
+            p.get("stock_code", ""): p.get("sector", "기타") for p in price_list
+        }
+
         api_results: list[dict[str, Any]] = []
         if api_codes:
             self.dart.load_corp_codes()
-            api_results = self.dart.get_all_financial_metrics(api_codes, year)
+            api_results = self.dart.get_all_financial_metrics(
+                api_codes, year, sector_map=price_sector_map,
+            )
             for m in api_results:
                 m.setdefault("quarter", "annual")
                 financial_list.append(m)
@@ -615,9 +623,6 @@ class AnalysisPipeline:
 
         # === sector 주입: KIS의 bstp_kor_isnm을 financial_data에 복사 ===
         # DART는 업종 정보를 제공하지 않으므로 KIS price_data["sector"]가 단일 진실 소스.
-        price_sector_map = {
-            p.get("stock_code", ""): p.get("sector", "기타") for p in price_list
-        }
         for fin in financial_list:
             code = fin.get("stock_code", "")
             if code in price_sector_map:

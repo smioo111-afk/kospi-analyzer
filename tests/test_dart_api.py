@@ -228,3 +228,101 @@ def test_real_cache_005930_samsung_no_regression(client: DARTClient) -> None:
     revenue = client._get_account_value(df, "IS", ["매출액"])
     # 삼성전자 2025 매출액은 333조원대 (조사 보고서 raw 기준)
     assert revenue > 100_000_000_000_000
+
+
+# ================================================================
+# 11) 금융주 sector 분기 — _calc_financial_revenue (묶음 F)
+# ================================================================
+def test_insurance_revenue_ifrs4_pattern(client: DARTClient) -> None:
+    """일반 손보 — 보험수익 + 투자영업수익 합산."""
+    df = pd.DataFrame([
+        _row("CIS", "보험수익", "14142885317456"),       # 14.14조
+        _row("CIS", "투자영업수익", "3163940132746"),    # 3.16조
+        _row("CIS", "이자수익", "30176345797"),
+    ])
+    result = client._calc_financial_revenue(df, "보험", "001450")
+    assert result == 14142885317456 + 3163940132746
+
+
+def test_insurance_revenue_ifrs17_pattern(client: DARTClient) -> None:
+    """삼성생명 IFRS17 — 보험서비스수익 + 이자수익 + 수수료수익."""
+    df = pd.DataFrame([
+        _row("CIS", "보험서비스수익", "9890442000000"),
+        _row("CIS", "이자수익", "8406565000000"),
+        _row("CIS", "수수료수익", "2177176000000"),
+    ])
+    result = client._calc_financial_revenue(df, "보험", "032830")
+    assert result == 9890442000000 + 8406565000000 + 2177176000000
+
+
+def test_securities_revenue_uses_operating_when_present(client: DARTClient) -> None:
+    """증권사 영업수익이 정확 매칭이면 그대로 사용 (한화투자/미래/키움)."""
+    df = pd.DataFrame([
+        _row("CIS", "영업수익", "3094578000000"),
+        _row("CIS", "수수료수익", "281200000000"),
+        _row("CIS", "이자수익", "391509000000"),
+    ])
+    result = client._calc_financial_revenue(df, "증권", "003530")
+    assert result == 3094578000000
+
+
+def test_securities_revenue_falls_back_to_components(client: DARTClient) -> None:
+    """삼성증권/NH 같이 영업수익 라벨 부재 → 수수료+이자+외환 합산."""
+    df = pd.DataFrame([
+        _row("CIS", "수수료수익", "1420400000000"),
+        _row("CIS", "이자수익", "1670057300671"),
+        _row("CIS", "외환거래이익", "0"),
+    ])
+    result = client._calc_financial_revenue(df, "증권", "016360")
+    assert result == 1420400000000 + 1670057300671
+
+
+def test_bank_holding_revenue_components_sum(client: DARTClient) -> None:
+    """BANK_HOLDING_CODES — 이자수익 + 수수료수익 + 보험수익 합산."""
+    df = pd.DataFrame([
+        _row("CIS", "이자수익", "27988801000000"),
+        _row("CIS", "수수료수익", "4564323000000"),
+        _row("CIS", "보험수익", "3364322000000"),
+    ])
+    result = client._calc_financial_revenue(df, "금융", "055550")  # 신한지주
+    assert result == 27988801000000 + 4564323000000 + 3364322000000
+
+
+def test_general_holding_in_금융_sector_unchanged(client: DARTClient) -> None:
+    """sector='금융'이지만 BANK_HOLDING_CODES 외 (두산/CJ/LG 등) → None."""
+    df = pd.DataFrame([
+        _row("CIS", "이자수익", "999999"),
+        _row("CIS", "수수료수익", "999999"),
+    ])
+    # 000150 두산 — sector='금융'인 일반 지주
+    result = client._calc_financial_revenue(df, "금융", "000150")
+    assert result is None
+
+
+def test_non_financial_sector_unchanged(client: DARTClient) -> None:
+    """비금융 sector (전기·전자, 화학 등) → None (기본 룰 사용)."""
+    df = pd.DataFrame([
+        _row("CIS", "매출액", "333605938000000"),
+        _row("CIS", "이자수익", "9999"),
+    ])
+    assert client._calc_financial_revenue(df, "전기·전자", "005930") is None
+    assert client._calc_financial_revenue(df, "화학", "011170") is None
+
+
+def test_extract_financial_metrics_uses_sector_for_bank(
+    client: DARTClient, monkeypatch
+) -> None:
+    """extract_financial_metrics에 sector='금융'+BANK 코드 전달 시 합산 매출 반환."""
+    df = pd.DataFrame([
+        _row("BS", "자산총계", "100000000"),
+        _row("BS", "자본총계", "10000000"),
+        _row("CIS", "이자수익", "27988801000000"),
+        _row("CIS", "수수료수익", "4564323000000"),
+        _row("CIS", "당기순이익(손실)", "5084519000000"),
+    ])
+    monkeypatch.setattr(client, "get_financial_statements", lambda code, y: df)
+    metrics = client.extract_financial_metrics(
+        "055550", year=2025, sector="금융",
+    )
+    # 합산: 이자(27.99조) + 수수료(4.56조) = 32.55조
+    assert metrics["revenue"] == 27988801000000 + 4564323000000
