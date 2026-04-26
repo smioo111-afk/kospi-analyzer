@@ -415,6 +415,10 @@ class AnalysisPipeline:
             except Exception as e:
                 logger.warning("성과 추적 업데이트 실패: %s", e)
 
+            # WAL 누적 방지 — 사이클 종료 시 PASSIVE 체크포인트.
+            # autocheckpoint(=1000 page)와 별개로, 1회 큰 변동 후 즉시 정리.
+            self.db.checkpoint_wal("PASSIVE")
+
             logger.info("[6/6] 완료 ✅")
             logger.info("="*50)
             logger.info("분석 파이프라인 완료: TOP1 = %s (%d점)",

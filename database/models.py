@@ -36,6 +36,10 @@ _CASCADE_SKIP_EXCEPTION_NAMES: frozenset[str] = frozenset({
 })
 _LARGE_CAP_THRESHOLD_KRW: int = 500_000_000_000  # 5000억원
 
+# 사이클 단위 cascade 발화 상한. 초과 시 잔여 cascade 차단 + ERROR 로그.
+# 4-22~24 80건 폭주를 다층 방어하기 위한 추가 안전장치.
+_CASCADE_PER_CYCLE_LIMIT: int = 5
+
 
 class Database:
     """SQLite 데이터베이스 관리 클래스.
@@ -63,7 +67,22 @@ class Database:
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
+            # WAL 누적 방지 — 1000 page(약 4MB)마다 자동 체크포인트.
+            # 분석 사이클 끝에서 명시적 PASSIVE도 한 번 추가 호출됨
+            # (main.py 파이프라인 종료부).
+            self._conn.execute("PRAGMA wal_autocheckpoint=1000")
         return self._conn
+
+    def checkpoint_wal(self, mode: str = "PASSIVE") -> None:
+        """수동 WAL 체크포인트. 분석 사이클 종료 시 호출 권장.
+
+        - PASSIVE: 다른 reader/writer 차단 안 함 (안전, 부분 체크포인트 가능).
+        - TRUNCATE: WAL 파일 비움 (백업 직전용, 다른 연결 있으면 실패 가능).
+        """
+        try:
+            self._get_conn().execute(f"PRAGMA wal_checkpoint({mode})")
+        except sqlite3.Error as e:
+            logger.warning("WAL 체크포인트 실패 (%s): %s", mode, e)
 
     def _init_tables(self) -> None:
         """테이블을 생성한다 (없으면)."""
@@ -1242,6 +1261,9 @@ class Database:
         price_cache: dict[str, int] = {}
         # 종목별 마지막 예외 타입명 (cascade 안전장치 판단용)
         last_exception_by_code: dict[str, str] = {}
+        # 사이클 단위 cascade 발화 카운터 (폭주 방지 다층 방어)
+        cascade_fired_this_cycle: int = 0
+        cascade_circuit_open: bool = False
 
         for row in rows:
             report_date = row["report_date"]
@@ -1289,6 +1311,20 @@ class Database:
                     # 3회 연속 실패. cascade 전에 안전장치 검사.
                     last_exc = last_exception_by_code.get(code, "")
                     skip, reason = self._should_skip_cascade(code, last_exc)
+                    # 사이클 단위 폭주 방지 — 임계치 초과 시 cascade 차단.
+                    if (not skip and not cascade_circuit_open and
+                            cascade_fired_this_cycle >= _CASCADE_PER_CYCLE_LIMIT):
+                        cascade_circuit_open = True
+                        logger.error(
+                            "cascade circuit-breaker 발동: 사이클당 cascade %d건 "
+                            "도달 → 잔여 cascade 차단. 수동 점검 필요.",
+                            cascade_fired_this_cycle,
+                        )
+                    if cascade_circuit_open and not skip:
+                        skip, reason = True, (
+                            f"circuit-breaker (cycle limit "
+                            f"{_CASCADE_PER_CYCLE_LIMIT})"
+                        )
 
                     # 어떤 경로든 실패 카운터는 최신화.
                     conn.execute(
@@ -1327,6 +1363,7 @@ class Database:
                         )
                         delisted_codes.add(code)
                         updated += affected
+                        cascade_fired_this_cycle += 1
                 else:
                     logger.warning(
                         "현재가 조회 실패 %s (report_date=%s, 누적 실패 %d회)",

@@ -382,6 +382,51 @@ def test_cascade_still_fires_for_small_cap_real_error() -> None:
 
 
 # ================================================================
+# E-2: cascade 사이클 단위 circuit-breaker
+# ================================================================
+def test_cascade_circuit_breaker_caps_per_cycle() -> None:
+    """한 사이클에 cascade가 임계치(5)를 넘으면 그 이상은 차단."""
+    from database.models import _CASCADE_PER_CYCLE_LIMIT
+    db = _make_db()
+    report_date = _report_date_weeks_ago(5)
+    # 7개 소형주 — 모두 ConnectionError로 cascade 후보
+    codes = [f"7770{i:02d}" for i in range(7)]
+    conn = db._get_conn()
+    for code in codes:
+        _seed_report(db, report_date, code, 1000)
+        conn.execute(
+            """INSERT INTO stock_scores
+               (analysis_date, stock_code, stock_name, market_cap)
+               VALUES (?, ?, ?, ?)""",
+            (report_date, code, f"소형주{code}", 50_000_000_000),  # 500억
+        )
+    conn.commit()
+
+    fake = FakeKIS(
+        {c: ["raise", "raise", "raise"] for c in codes},
+        exception_cls=ConnectionError,
+    )
+    for _ in range(3):
+        db.update_performance_tracking(fake)
+
+    # is_delisted=1로 마킹된 종목 수 = 임계치 이하여야
+    rows = conn.execute(
+        """SELECT stock_code, is_delisted FROM performance_tracking
+           WHERE report_date = ?""",
+        (report_date,),
+    ).fetchall()
+    delisted = sum(1 for r in rows if r["is_delisted"])
+    assert delisted <= _CASCADE_PER_CYCLE_LIMIT, (
+        f"circuit-breaker 미동작: {delisted}건 cascade "
+        f"(한도 {_CASCADE_PER_CYCLE_LIMIT})"
+    )
+    # 적어도 한도까지는 발화해야
+    assert delisted >= _CASCADE_PER_CYCLE_LIMIT, (
+        f"cascade가 한도까지 동작 안 함: {delisted}건"
+    )
+
+
+# ================================================================
 # 메인
 # ================================================================
 def main() -> int:
@@ -393,6 +438,7 @@ def main() -> int:
     test_cascade_skipped_on_runtime_error()
     test_cascade_skipped_on_large_cap()
     test_cascade_still_fires_for_small_cap_real_error()
+    test_cascade_circuit_breaker_caps_per_cycle()
 
     print(f"\n{'='*60}")
     print(f"결과: PASS={_pass} FAIL={_fail}")
