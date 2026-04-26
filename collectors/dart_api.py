@@ -263,7 +263,7 @@ class DARTClient:
             df, "IS", ["매출액", "매출", "수익(매출액)", "영업수익"]
         )
         metrics["operating_income"] = self._get_account_value(
-            df, "IS", ["영업이익", "영업이익(손실)", "영업손익"]
+            df, "IS", ["영업이익", "영업이익(손실)", "영업손익", "영업손실"]
         )
         metrics["net_income"] = self._get_account_value(
             df, "IS", ["당기순이익", "당기순이익(손실)"]
@@ -316,7 +316,7 @@ class DARTClient:
         prev_df = self.get_financial_statements(stock_code, year - 1)
         if prev_df is not None and not prev_df.empty:
             prev_rev = self._get_account_value(prev_df, "IS", ["매출액", "매출", "수익(매출액)", "영업수익"])
-            prev_op = self._get_account_value(prev_df, "IS", ["영업이익", "영업이익(손실)", "영업손익"])
+            prev_op = self._get_account_value(prev_df, "IS", ["영업이익", "영업이익(손실)", "영업손익", "영업손실"])
             prev_net = self._get_account_value(prev_df, "IS", ["당기순이익", "당기순이익(손실)"])
 
             metrics["prev_revenue"] = prev_rev
@@ -372,7 +372,7 @@ class DARTClient:
             metric: "operating_income" 또는 "revenue"
         """
         account_names = {
-            "operating_income": ["영업이익", "영업이익(손실)", "영업손익"],
+            "operating_income": ["영업이익", "영업이익(손실)", "영업손익", "영업손실"],
             "revenue": ["매출액", "매출", "수익(매출액)", "영업수익"],
         }
         names = account_names.get(metric, ["매출액"])
@@ -395,7 +395,23 @@ class DARTClient:
         return decline_count
 
     def _get_dividend_yield(self, stock_code: str, year: int) -> float:
-        """DART 배당 API에서 배당수익률을 조회한다."""
+        """DART 배당 API에서 배당수익률을 조회한다.
+
+        당해 사업보고서에 배당수익률이 미공시('-')이면 전년도(year-1)로
+        한 번 폴백한다. 보험·증권·금융지주 등 결산기일·배당 의사결정이
+        늦은 종목은 사업보고서 공시 시점에 배당 정보가 없는 경우가 흔하다.
+        """
+        v = self._fetch_dividend_yield_for_year(stock_code, year)
+        if v > 0:
+            return v
+        # 당해 미공시 → 전년도로 1회 폴백
+        prev = self._fetch_dividend_yield_for_year(stock_code, year - 1)
+        return prev
+
+    def _fetch_dividend_yield_for_year(
+        self, stock_code: str, year: int,
+    ) -> float:
+        """단일 연도 alotMatter API 호출 — 현금배당수익률 추출."""
         corp_code = self.get_corp_code(stock_code)
         if not corp_code:
             return 0.0
@@ -405,22 +421,21 @@ class DARTClient:
             "crtfc_key": DARTConfig.API_KEY,
             "corp_code": corp_code,
             "bsns_year": str(year),
-            "reprt_code": "11011",  # 사업보고서
+            "reprt_code": "11011",
         }
 
         self._increment_call_count()
         try:
             response = requests.get(url, params=params, timeout=10)
             data = response.json()
-
             if data.get("status") != "000":
                 return 0.0
-
             for item in data.get("list", []):
                 if "배당수익률" in item.get("se", ""):
                     val = item.get("thstrm", "0")
-                    return self._parse_float(val)
-
+                    parsed = self._parse_float(val)
+                    if parsed > 0:
+                        return parsed
             return 0.0
         except Exception:
             return 0.0

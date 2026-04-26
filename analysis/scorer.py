@@ -458,16 +458,26 @@ class ScoringEngine:
 
         total_penalties = 0
         penalty_reasons: list[str] = []
-        p = self.cfg.TOTAL_SCORE_PENALTIES
-        if fin.get("consecutive_revenue_decline_years", 0) >= 3:
-            total_penalties += p["3yr_revenue_decline"]
-            penalty_reasons.append(f"3년 연속 매출 감소 ({p['3yr_revenue_decline']})")
-        if fin.get("prev_net_income", 0) > 0 and fin.get("net_income", 0) < 0:
-            total_penalties += p["profit_to_loss"]
-            penalty_reasons.append(f"흑자→적자 전환 ({p['profit_to_loss']})")
-        if fin.get("consecutive_loss_years", 0) >= 3:
-            total_penalties += p["3yr_consecutive_loss"]
-            penalty_reasons.append(f"3년 연속 적자 ({p['3yr_consecutive_loss']})")
+        # MED-5: PL 핵심 필드 모두 0이면 페널티 판정 자체가 불가능. 결손과
+        # 무손실(흑자)을 구분해서 사유에 명시. 페널티 점수는 0 유지.
+        is_pl_missing = (
+            fin.get("revenue", 0) == 0
+            and fin.get("operating_income", 0) == 0
+            and fin.get("net_income", 0) == 0
+        )
+        if is_pl_missing:
+            penalty_reasons.append("PL 데이터 결손 — 페널티 판정 불가")
+        else:
+            p = self.cfg.TOTAL_SCORE_PENALTIES
+            if fin.get("consecutive_revenue_decline_years", 0) >= 3:
+                total_penalties += p["3yr_revenue_decline"]
+                penalty_reasons.append(f"3년 연속 매출 감소 ({p['3yr_revenue_decline']})")
+            if fin.get("prev_net_income", 0) > 0 and fin.get("net_income", 0) < 0:
+                total_penalties += p["profit_to_loss"]
+                penalty_reasons.append(f"흑자→적자 전환 ({p['profit_to_loss']})")
+            if fin.get("consecutive_loss_years", 0) >= 3:
+                total_penalties += p["3yr_consecutive_loss"]
+                penalty_reasons.append(f"3년 연속 적자 ({p['3yr_consecutive_loss']})")
 
         return {"revenue_growth_score": rev_s, "op_income_growth_score": op_s,
                 "profit_health_score": health_s, "profit_health_label": health_label,

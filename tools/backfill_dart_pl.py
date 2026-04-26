@@ -38,7 +38,7 @@ CACHE_DIR = Path("data/dart_cache")
 DB_PATH = "data/kospi_analyzer.db"
 
 REV_NAMES = ["매출액", "매출", "수익(매출액)", "영업수익"]
-OP_NAMES = ["영업이익", "영업이익(손실)", "영업손익"]
+OP_NAMES = ["영업이익", "영업이익(손실)", "영업손익", "영업손실"]
 NI_NAMES = ["당기순이익", "당기순이익(손실)"]
 DEP_NAMES = ["감가상각비", "유무형자산상각비", "감가상각비와무형자산상각비"]
 

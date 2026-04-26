@@ -112,7 +112,82 @@ def test_non_is_div_no_fallback(client: DARTClient) -> None:
 
 
 # ================================================================
-# 7) 빈값/"-" 안전 처리 (회귀)
+# 7) 영업손실 라벨 매칭 (적자기업 — 011170, 020150 패턴)
+# ================================================================
+def test_operating_loss_label_matched_as_negative(client: DARTClient) -> None:
+    """적자기업이 '영업손실' 라벨로 표기하는 경우 음수값으로 추출."""
+    df = pd.DataFrame([
+        _row("CIS", "매출", "18483005314922"),
+        _row("CIS", "영업손실", "-943115729953"),
+        _row("CIS", "기본및희석주당중단영업이익", "130"),
+    ])
+    op = client._get_account_value(
+        df, "IS", ["영업이익", "영업이익(손실)", "영업손익", "영업손실"]
+    )
+    assert op == -943115729953
+
+
+def test_operating_loss_does_not_match_eps_partial(client: DARTClient) -> None:
+    """'기본및희석주당중단영업이익' 같은 EPS 라벨이 정확 일치 단계에서
+    '영업이익' 부분 매칭으로 잘못 잡히지 않아야 한다.
+    (정확 일치 단계가 부분 일치보다 우선이라 회귀 방지된다)"""
+    df = pd.DataFrame([
+        _row("CIS", "기본및희석주당중단영업이익", "130"),
+        _row("CIS", "영업손실", "-9000"),
+    ])
+    # 정확 일치로 영업손실 매칭 → -9000
+    op = client._get_account_value(
+        df, "IS", ["영업이익", "영업이익(손실)", "영업손익", "영업손실"]
+    )
+    assert op == -9000
+
+
+# ================================================================
+# 9) dividend_yield 전년도 폴백 (HIGH-2)
+# ================================================================
+def test_dividend_yield_uses_prev_year_when_current_missing(monkeypatch, client: DARTClient) -> None:
+    """당해 사업보고서에 배당수익률 미공시('-' → 0.0)면 전년도로 폴백."""
+    calls: list[int] = []
+
+    def fake_fetch(code: str, year: int) -> float:
+        calls.append(year)
+        if year == 2025:
+            return 0.0  # 미공시
+        if year == 2024:
+            return 1.5
+        return 0.0
+
+    monkeypatch.setattr(client, "_fetch_dividend_yield_for_year", fake_fetch)
+    result = client._get_dividend_yield("005930", 2025)
+    assert result == 1.5
+    assert calls == [2025, 2024]
+
+
+def test_dividend_yield_uses_current_when_present(monkeypatch, client: DARTClient) -> None:
+    """당해 정상값이면 전년도 호출하지 않음 (회귀 방지 + 호출 절약)."""
+    calls: list[int] = []
+
+    def fake_fetch(code: str, year: int) -> float:
+        calls.append(year)
+        return 2.3 if year == 2025 else 1.0
+
+    monkeypatch.setattr(client, "_fetch_dividend_yield_for_year", fake_fetch)
+    result = client._get_dividend_yield("005930", 2025)
+    assert result == 2.3
+    assert calls == [2025]
+
+
+def test_dividend_yield_zero_when_both_years_missing(monkeypatch, client: DARTClient) -> None:
+    """양 연도 모두 미공시면 0.0 (진짜 무배당)."""
+    monkeypatch.setattr(
+        client, "_fetch_dividend_yield_for_year",
+        lambda code, year: 0.0,
+    )
+    assert client._get_dividend_yield("005930", 2025) == 0.0
+
+
+# ================================================================
+# 10) 빈값/"-" 안전 처리 (회귀)
 # ================================================================
 def test_empty_amount_safe(client: DARTClient) -> None:
     df = pd.DataFrame([_row("IS", "매출액", "")])

@@ -170,3 +170,66 @@ def test_calc_financial_score_real_low_debt_unchanged(engine: ScoringEngine) -> 
     }
     out = engine._calc_financial_score(fin)
     assert out["debt_ratio_score"] == 5
+
+
+# ================================================================
+# MED-5: PL 결손 식별 — 페널티 판정 불가 사유 표시
+# ================================================================
+def test_growth_score_pl_missing_emits_data_missing_reason(engine: ScoringEngine) -> None:
+    """rev/op/net 모두 0(PL 결손)이면 penalty_reasons에 결손 표시."""
+    fin = {
+        "stock_code": "TEST", "year": 2025,
+        "revenue": 0, "operating_income": 0, "net_income": 0,
+        "prev_operating_income": 0, "prev_net_income": 0,
+        "revenue_growth_yoy": 0.0, "op_income_growth_yoy": 0.0,
+        "consecutive_revenue_decline_years": 5,  # ← 결손이지만 페널티 적용 안 됨
+        "consecutive_loss_years": 5,
+        "consecutive_op_decline_years": 0,
+    }
+    out = engine._calc_growth_score(fin)
+    assert out["total_penalties"] == 0
+    assert any("결손" in r for r in out["penalty_reasons"])
+    # consecutive_*_years>=3 로직이 우회되어야 (결손 종목은 신뢰 못 함)
+    assert all("3년 연속" not in r for r in out["penalty_reasons"])
+
+
+def test_growth_score_real_loss_still_applies_penalty(engine: ScoringEngine) -> None:
+    """진짜 적자(rev>0, net<0, consecutive_loss>=3)는 페널티 적용 — 회귀 방지."""
+    fin = {
+        "stock_code": "TEST", "year": 2025,
+        "revenue": 1_000_000_000_000,  # ← 결손 아님
+        "operating_income": -50_000_000_000,
+        "net_income": -100_000_000_000,
+        "prev_operating_income": 10_000_000_000,
+        "prev_net_income": 20_000_000_000,
+        "revenue_growth_yoy": -5.0,
+        "op_income_growth_yoy": -200.0,
+        "consecutive_revenue_decline_years": 0,
+        "consecutive_loss_years": 3,  # ← 3년 적자 페널티 발동
+        "consecutive_op_decline_years": 0,
+    }
+    out = engine._calc_growth_score(fin)
+    # 3년 적자 페널티 + 흑자→적자 전환 페널티
+    assert out["total_penalties"] != 0
+    reasons = " | ".join(out["penalty_reasons"])
+    assert "3년 연속 적자" in reasons
+
+
+def test_growth_score_normal_profit_no_penalty(engine: ScoringEngine) -> None:
+    """정상 흑자 종목은 페널티 없고 결손 사유도 없다 — 회귀 방지."""
+    fin = {
+        "stock_code": "TEST", "year": 2025,
+        "revenue": 1_000_000_000_000,
+        "operating_income": 100_000_000_000,
+        "net_income": 80_000_000_000,
+        "prev_operating_income": 90_000_000_000,
+        "prev_net_income": 70_000_000_000,
+        "revenue_growth_yoy": 10.0,
+        "op_income_growth_yoy": 11.0,
+        "consecutive_revenue_decline_years": 0,
+        "consecutive_loss_years": 0,
+        "consecutive_op_decline_years": 0,
+    }
+    out = engine._calc_growth_score(fin)
+    assert out["total_penalties"] == 0
+    assert out["penalty_reasons"] == []
