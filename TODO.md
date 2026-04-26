@@ -47,12 +47,6 @@
   등록일: 2026-04-22
   상태: 열림
 
-[P1][FEATURE] KOSPI 지수 수집 구현
-  배경: analysis_results.kospi_index 전건 0/NULL. 초과수익 계산 불가.
-  내용: KIS FHPUP02100000 또는 pykrx 사용. 매일 분석 파이프라인 마지막에 저장.
-  공수: S
-  등록일: 2026-04-24
-  상태: 열림
 
 [P1][FEATURE] 금융주 섹터 매핑 완성
   배경: signals.py _is_financial_sector가 placeholder로 항상 False.
@@ -204,26 +198,6 @@
   등록일: 2026-04-22
   상태: 열림
 
-[P2][BUG] _calc_growth_score 페널티 결손 식별 (MED-5)
-  배경: 감사 보고서 §MED-5. consecutive_loss_years=0이 무손실인지 결손인지
-        구분 안 됨. PL 결손 종목에서 페널티 우회 발생.
-  내용: revenue/total_assets 등 다른 PL/BS 필드 결손 여부와 결합해
-        '결손' 신호를 명시적으로 식별 후 페널티 적용.
-  공수: S
-  등록일: 2026-04-26
-  상태: 열림
-
-[P2][BUG] dividend_yield 전년도 폴백 (HIGH-2)
-  배경: financial_metrics 67/233 (28.8%) 결손. 2026-04-26 직접 호출 검증
-        결과 alotMatter API status=000 정상 응답이지만 결손 종목 응답에
-        "현금배당수익률(%)='-'" (DART 미공시). 보험·증권·일부 적자기업이
-        결산기일 기준 사업보고서 공시 시점에 배당 의사결정 미완료.
-  내용: _get_dividend_yield에서 '-' 또는 0 응답 시 전년도(year-1) 사업
-        보고서로 폴백 호출. 회복 추정 50%+. account_id 기반 매칭도 검토.
-  공수: S
-  등록일: 2026-04-26
-  상태: 열림
-
 [P2][FEATURE] DART 캐시 백필 도구 확장 (HIGH-4)
   배경: consecutive_*_years, prev_revenue, prev_op 등 추가 필드도
         캐시(2024 parquet 포함) 기반 백필 가능.
@@ -256,6 +230,25 @@
 ---
 
 ## P3 (장기 아이디어)
+
+[P3][REFACTOR] 미호출 public Database 메서드 정리 또는 활용
+  배경: 묶음 D-4 조사에서 발견. get_results_by_date, get_delisted_stocks,
+        get_fetch_failure_candidates, update_portfolio_stock_names_from_master,
+        mark_stock_delisted (운영자 도구) 등 5개.
+  내용: 사용처 결정 후 텔레그램 명령/대시보드/백테스트 entry로 활용 또는
+        deprecated 처리.
+  공수: S
+  등록일: 2026-04-26
+  상태: 열림
+
+[P3][BUG] 호텔신라(008770) 부분 결손 백필 도구 보강
+  배경: tools/backfill_dart_pl.py WHERE 조건이 완전 결손(rev=op=net=0)만
+        대상이라 부분 결손(op만 0) 종목은 미커버. 008770 사례 1건 확인.
+  내용: WHERE 조건 완화 또는 별도 도구. 다음 분석 사이클에서 자연 회복
+        가능하므로 우선순위 낮음.
+  공수: S
+  등록일: 2026-04-26
+  상태: 열림
 
 [P3][FEATURE] 포트폴리오 최적화
   배경: 현재 TOP 10 equal weight. 업종 분산, 상관관계 고려 부재.
@@ -315,6 +308,58 @@
 ---
 
 ## 완료됨
+
+[P1][FEATURE] KOSPI 지수 수집 구현 (묶음 D)
+  배경: analysis_results.kospi_index 100% 0/NULL. 초과수익 계산 불가.
+  내용:
+    1) KISClient.aget_kospi_index() (TR FHPUP02100000) + sync 래퍼
+    2) aget_kospi_daily_index() 백필용 (TR FHKUP03500100)
+    3) main.py:296 분석 사이클 종료부에 호출 + save_daily_result 인자 전달
+    4) tools/backfill_kospi_index.py — KIS 기반 (pykrx KRX 호환 깨짐)
+  완료일: 2026-04-26
+  결과:
+    - PR de3dd26 main 머지 (squash)
+    - 백필 26/26 행 갱신 (5,450~6,475 범위, 결손 0)
+    - 다음 사이클부터 자동 수집 + foreign_net_buy 누적 함께 기록
+    - baseline부터 호출 인자 누락 상태였음 (save_analysis_result 자체는
+      HistoryService 경유 정상 호출)
+
+[P2][OPS] WAL 자동 체크포인트 (묶음 E-1)
+  배경: 4-22 백업 직전 WAL 2.1M 누적 발견. main DB 2주 stale 상태.
+  내용:
+    1) PRAGMA wal_autocheckpoint=1000 (~4MB) — 연결 초기화 시 설정
+    2) Database.checkpoint_wal(PASSIVE) 메서드 신설
+    3) main.py 분석 사이클 종료 직전 명시적 PASSIVE 호출
+  완료일: 2026-04-26
+  결과: PR 73b1223. autocheckpoint 자동 + 사이클 종료 PASSIVE 보강.
+
+[P2][OPS] cascade circuit-breaker (묶음 E-2)
+  배경: 4-22~24 cascade 80건 폭주 사건의 다층 방어 추가.
+  내용: _CASCADE_PER_CYCLE_LIMIT=5 상수 + 사이클당 카운터 +
+        임계 도달 시 logger.error + 잔여 cascade 차단.
+  완료일: 2026-04-26
+  결과: 기존 안전장치(RuntimeError skip, 대형주 whitelist)와 직교.
+        단위 테스트로 7개 후보 → 5건 발화 + 차단 검증.
+
+[P2][BUG] 011170 영업이익 매칭 오류 (묶음 C-3)
+  배경: 적자기업 "영업손실" 라벨이 후보 리스트에 없음. 부분 매칭이
+        "기본및희석주당중단영업이익"에 잘못 걸림.
+  내용: 후보에 "영업손실" 추가. 정확 일치 우선 + 부분 일치 fallback 분리.
+  완료일: 2026-04-26
+  결과: 011170 130→-9,431억 등 5종목 정정/회복. 정상 종목 회귀 0건.
+
+[P2][BUG] _calc_growth_score 페널티 결손 식별 (묶음 C-4 / MED-5)
+  배경: PL 전체 결손 종목이 페널티 판정 회피. 결손과 무손실 구분 안 됨.
+  내용: is_pl_missing 가드 추가. penalty_reasons에 "결손" 사유 표시.
+  완료일: 2026-04-26
+  결과: 점수 회귀 0 (사유 표시만 강화).
+
+[P2][BUG] dividend_yield 전년도 폴백 (묶음 C-2 / HIGH-2)
+  배경: alotMatter status=000인데 결손 종목 응답이 '-'. DART 미공시.
+  내용: _get_dividend_yield에서 year=N 결손 시 year-1로 1회 폴백 호출.
+  완료일: 2026-04-26
+  결과: 결손율 28.8%(67건) → 25.8%(60건). 7건 회복.
+        tools/backfill_dividend.py 동봉.
 
 [P1][BUG] DART PL 데이터 결손 수정 (CIS fallback) + scorer silent fail
   배경: financial_metrics(2025 annual) 233건 중 180건(77%) 매출/영업이익/
