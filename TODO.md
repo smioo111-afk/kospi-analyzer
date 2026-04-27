@@ -19,24 +19,6 @@
 
 ## P1 (다음 단계 진입 전)
 
-[P1][BUG] FCF 수집 결손 64.5% — account_id/공백 매칭 보강
-  배경: 256개 중 165개(64.5%) free_cash_flow=0 강제로 quality_score=0.
-        원인: collectors/dart_api.py _get_account_value의 한글 공백 변형
-        매칭 실패. 결손 30/30 표본 모두 raw CF 데이터 보유, account_id
-        (ifrs-full_CashFlowsFromUsedInOperatingActivities)는 100% 동일.
-        부수 발견: 정상 91개도 CAPEX 매칭 100% 실패 → FCF가 OCF 그대로
-        과대평가 (삼성전자 ≈ 2.25×).
-  내용: docs/fcf_collection_audit_20260427.md §5 권고 A+B 적용:
-        (A) _get_account_value에 account_id 우선 매칭 단계 추가
-        (B) account_nm 공백 정규화(replace " ", "") 단계 추가
-        (선택, 별도 PR) FCF NULL vs 0 구분 — financial_metrics 마이그레이션 동반.
-        테스트: 8개 표본 골든 OCF/CAPEX/FCF + 변형 5개 단위 매칭.
-        영향: 모든 종목 FCF 재계산 필요 (다음 정기 사이클 또는 단발 재수집).
-  공수: S~M (4~8h)
-  선행: 본 조사 (완료, docs/fcf_collection_audit_20260427.md)
-  등록일: 2026-04-27
-  상태: 열림
-
 [P1][BUG] performance_tracking 100% 미수집 (CRIT-3)
   배경: docs/data_integrity_audit_20260426.md §6 참조. 82건 전수에서
         price_after_1w/1m/3m/6m/1y 모두 0. last_updated 빈 문자열 80건,
@@ -257,6 +239,16 @@
 
 ## P3 (장기 아이디어)
 
+[P3][BUG] FCF NULL/0 구분 (silent fail 해소)
+  배경: 현재는 매칭 실패 시 0 저장 → 진짜 0과 구분 불가.
+        FCF account_id 매칭 보강 후에도 캐시 누락 11개(우선주)는 여전히 0.
+        scorer 가드(fcf<=0 → quality 0점)가 silent fail을 가리고 있음.
+  내용: financial_metrics.free_cash_flow NULL 허용 마이그레이션 +
+        scorer에서 None과 음수를 분리 처리.
+  공수: M (마이그레이션 동반)
+  등록일: 2026-04-27
+  상태: 열림
+
 [P3][DATA] 4-27 analysis_results.kospi_index 결손 (1행)
   배경: 4-27 첫 정상 사이클에서 async with 컨텍스트 버그로 결손.
         실제 종가 6615.03 확정 (aget_kospi_daily_index + 격리 호출
@@ -374,6 +366,21 @@
 ---
 
 ## 완료됨
+
+[P1][BUG] FCF 수집 결손 64.5% — account_id/공백 매칭 보강
+  배경: 256개 중 165개(64.5%) free_cash_flow=0 강제로 quality_score=0.
+        부수: 정상 91개도 CAPEX 매칭 실패로 FCF=OCF 그대로 과대평가
+        (삼성전자 ≈ 2.25×).
+  완료일: 2026-04-27
+  결과:
+    - 커밋 37db2e3 main 머지 (squash)
+    - _get_account_value: account_id 우선 매칭 + 공백 정규화 단계 추가
+    - tools/backfill_fcf.py 신규 (캐시 재파싱으로 DB만 갱신)
+    - tests/test_dart_api 34/34 pass (신규 11건: 8개 표본 골든 + 회귀 방지)
+    - 백필 결과: zero 64.5% → 4.3% (256개 중 11개만 잔존, 캐시 누락 우선주)
+    - 87 회복 / 50 진짜 음수 / 88 CAPEX 차감 정정 / 회귀 0건
+    - 봇 PID 320709 → 321610 (20:16 재시작)
+    - 후속(P3): FCF NULL/0 구분 (silent fail 해소)
 
 [P2][FEATURE] 모멘텀 TOP 10 보조 섹션 (저평가 괴리율 교체)
   배경: 사용자 직관 + 학술 모멘텀 가설(Jegadeesh 1993, AQR). 종합
