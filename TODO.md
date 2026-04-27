@@ -19,6 +19,24 @@
 
 ## P1 (다음 단계 진입 전)
 
+[P1][BUG] FCF 수집 결손 64.5% — account_id/공백 매칭 보강
+  배경: 256개 중 165개(64.5%) free_cash_flow=0 강제로 quality_score=0.
+        원인: collectors/dart_api.py _get_account_value의 한글 공백 변형
+        매칭 실패. 결손 30/30 표본 모두 raw CF 데이터 보유, account_id
+        (ifrs-full_CashFlowsFromUsedInOperatingActivities)는 100% 동일.
+        부수 발견: 정상 91개도 CAPEX 매칭 100% 실패 → FCF가 OCF 그대로
+        과대평가 (삼성전자 ≈ 2.25×).
+  내용: docs/fcf_collection_audit_20260427.md §5 권고 A+B 적용:
+        (A) _get_account_value에 account_id 우선 매칭 단계 추가
+        (B) account_nm 공백 정규화(replace " ", "") 단계 추가
+        (선택, 별도 PR) FCF NULL vs 0 구분 — financial_metrics 마이그레이션 동반.
+        테스트: 8개 표본 골든 OCF/CAPEX/FCF + 변형 5개 단위 매칭.
+        영향: 모든 종목 FCF 재계산 필요 (다음 정기 사이클 또는 단발 재수집).
+  공수: S~M (4~8h)
+  선행: 본 조사 (완료, docs/fcf_collection_audit_20260427.md)
+  등록일: 2026-04-27
+  상태: 열림
+
 [P1][BUG] performance_tracking 100% 미수집 (CRIT-3)
   배경: docs/data_integrity_audit_20260426.md §6 참조. 82건 전수에서
         price_after_1w/1m/3m/6m/1y 모두 0. last_updated 빈 문자열 80건,
