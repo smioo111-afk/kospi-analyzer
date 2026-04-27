@@ -56,7 +56,7 @@ class MessageFormatter:
         Args:
             prev_top_10: 전일 TOP 10 (순위/점수 변동 추적용)
             scored_list: 전종목 스코어링 결과. 주어지면 종합 TOP 10 다음에
-                fair_value_gap 기준 저평가 괴리율 TOP 10 섹션을 추가한다.
+                momentum_score 기준 모멘텀 TOP 10 보조 섹션을 추가한다.
         """
         if stoploss_map is None:
             stoploss_map = {}
@@ -87,42 +87,52 @@ class MessageFormatter:
             ))
             lines.append("")
 
-        # 저평가 괴리율 TOP 10 (scored_list가 주어졌을 때만)
-        # 종합 TOP 10과 겹치는 종목도 그대로 노출
-        # 필터: (1) 외국인 20일 순매수 ≥ 0, (2) ROE ≥ 3%, (3) 2년 연속 이익감소 제외
+        # 모멘텀 TOP 10 보조 섹션 (scored_list가 주어졌을 때만)
+        # 종합 TOP 10(가치+모멘텀 하이브리드)과 별도로 순수 모멘텀 시각 제공.
+        # 필터: 시총 1,000억+, 거래대금 10억+ (유동성). 가치 필터 없음.
+        # 정렬: momentum_score 내림차순 → foreign_net_buy_5d 내림차순.
         if scored_list:
-            undervalued = [
+            momentum_pool = [
                 s for s in scored_list
-                if s.get("fair_value_gap", 0) < 0
-                and s.get("fair_value_low", 0) > 0
-                and s.get("foreign_net_buy_20d", 0) >= 0
-                and s.get("roe", 0) >= 3.0
-                and s.get("consecutive_op_decline_years", 0) < 2
+                if s.get("market_cap", 0) >= 100_000_000_000
+                and s.get("trading_value", 0) >= 1_000_000_000
             ]
-            # 괴리율이 큰 (가장 음수인) 순으로 정렬
-            undervalued.sort(key=lambda s: s.get("fair_value_gap", 0))
-            top_undervalued = undervalued[:10]
+            momentum_pool.sort(
+                key=lambda s: (
+                    s.get("momentum_score", 0),
+                    s.get("foreign_net_buy_5d", 0),
+                ),
+                reverse=True,
+            )
+            top_momentum = momentum_pool[:10]
 
-            if top_undervalued:
+            if top_momentum:
                 lines.append(
-                    f"💎 저평가 괴리율 TOP {len(top_undervalued)} "
-                    f"(외국인 순매수 + ROE 3%↑ + 이익감소 제외)"
+                    f"🚀 모멘텀 TOP {len(top_momentum)} "
+                    f"(시총 1,000억+, 거래대금 10억+)"
                 )
-                for idx, s in enumerate(top_undervalued):
+                for idx, s in enumerate(top_momentum):
                     emoji = NUM_EMOJI[idx] if idx < 10 else f"{idx+1}."
                     code = s.get("stock_code", "")
                     name = s.get("stock_name", "")
                     price = s.get("current_price", 0)
-                    fair_low = s.get("fair_value_low", 0)
-                    fair_high = s.get("fair_value_high", 0)
-                    gap = s.get("fair_value_gap", 0)
+                    mom = s.get("momentum_score", 0)
+                    w52 = s.get("week52_position", 0)
+                    f5 = s.get("foreign_net_buy_5d", 0)
+                    i5 = s.get("institutional_net_buy_5d", 0)
+                    price_str = f"{price:,}원" if price else "—"
+                    w52_str = f"{w52:.0f}%" if w52 else "—"
+                    f5_str = f"{f5:+,}" if f5 else "0"
+                    i5_str = f"{i5:+,}" if i5 else "0"
                     lines.append(
                         f"{emoji} {self._format_name_code(name, code)}"
                     )
                     lines.append(
-                        f"   현재가: {price:,}원 | "
-                        f"적정주가: {fair_low:,}~{fair_high:,}원 | "
-                        f"괴리율: {gap}%"
+                        f"   모멘텀: {mom}/20 | 52주: {w52_str} | "
+                        f"현재가: {price_str}"
+                    )
+                    lines.append(
+                        f"   수급(5일): 외국인 {f5_str} | 기관 {i5_str}"
                     )
                 lines.append("")
 

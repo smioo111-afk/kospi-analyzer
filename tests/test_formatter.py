@@ -181,21 +181,128 @@ def test_stock_detail_signal_reason_shown(fmt: MessageFormatter) -> None:
 
 
 # ================================================================
-# format_daily_report (v3 회귀 방지) — 핵심 섹션만
+# format_daily_report — 모멘텀 TOP 10 보조 섹션 (저평가 괴리율 교체)
 # ================================================================
-def test_daily_report_includes_undervaluation_section(fmt: MessageFormatter) -> None:
-    """어제 발송 형식(저평가 괴리율 TOP) 회귀 방지."""
-    top_10 = [_v3_dict(stock_code=f"00593{i}", total_score=80 - i * 2) for i in range(10)]
+def _momentum_candidate(**overrides) -> dict:
+    """모멘텀 TOP 후보 기본 dict (시총·거래대금 필터 통과)."""
+    base = _v3_dict(
+        market_cap=200_000_000_000,    # 2,000억 (1,000억 필터 통과)
+        trading_value=5_000_000_000,   # 50억 (10억 필터 통과)
+        momentum_score=10,
+        foreign_net_buy_5d=0,
+        institutional_net_buy_5d=0,
+        week52_position=50.0,
+    )
+    base.update(overrides)
+    return base
+
+
+def test_momentum_section_replaces_undervaluation(fmt: MessageFormatter) -> None:
+    """저평가 괴리율 섹션 부재 + 모멘텀 TOP 섹션 존재."""
+    top_10 = [_v3_dict(stock_code=f"00593{i}", total_score=80 - i * 2)
+              for i in range(10)]
     scored_list = [
-        _v3_dict(stock_code="888888", stock_name="저평가A",
-                 fair_value_gap=-30.0, foreign_net_buy_20d=5,
-                 roe=8.0, consecutive_op_decline_years=0,
-                 fair_value_low=10000, fair_value_high=20000),
+        _momentum_candidate(stock_code="111111", stock_name="모멘텀A",
+                            momentum_score=18),
     ]
     msgs = fmt.format_daily_report(
         top_10=top_10, warnings=[], stats={},
         scored_list=scored_list, kospi_index=2500.0,
     )
     full = "\n".join(msgs)
-    assert "저평가 괴리율 TOP" in full
-    assert "저평가A" in full or "888888" in full
+    assert "저평가 괴리율" not in full
+    assert "💎 저평가" not in full
+    assert "🚀 모멘텀 TOP" in full
+    assert "모멘텀A" in full or "111111" in full
+
+
+def test_momentum_section_sorts_by_momentum_score(fmt: MessageFormatter) -> None:
+    """momentum_score 내림차순 정렬, 동점 시 foreign_net_buy_5d."""
+    top_10 = [_v3_dict(stock_code=f"00593{i}", total_score=80) for i in range(10)]
+    scored_list = [
+        _momentum_candidate(stock_code="A00001", stock_name="낮음",
+                            momentum_score=5),
+        _momentum_candidate(stock_code="A00002", stock_name="최고",
+                            momentum_score=20),
+        _momentum_candidate(stock_code="A00003", stock_name="동점B",
+                            momentum_score=15, foreign_net_buy_5d=1),
+        _momentum_candidate(stock_code="A00004", stock_name="동점A",
+                            momentum_score=15, foreign_net_buy_5d=10),
+    ]
+    msgs = fmt.format_daily_report(
+        top_10=top_10, warnings=[], stats={},
+        scored_list=scored_list, kospi_index=2500.0,
+    )
+    full = "\n".join(msgs)
+    section_idx = full.index("🚀 모멘텀 TOP")
+    section = full[section_idx:]
+    # 순서: 최고(20) → 동점A(15, f5=10) → 동점B(15, f5=1) → 낮음(5)
+    pos_top = section.index("최고")
+    pos_a = section.index("동점A")
+    pos_b = section.index("동점B")
+    pos_low = section.index("낮음")
+    assert pos_top < pos_a < pos_b < pos_low
+
+
+def test_momentum_section_excludes_low_marketcap(fmt: MessageFormatter) -> None:
+    """시총 1,000억 미만은 모멘텀 점수 높아도 제외."""
+    top_10 = [_v3_dict(stock_code=f"00593{i}", total_score=80) for i in range(10)]
+    scored_list = [
+        _momentum_candidate(stock_code="SMALL1", stock_name="소형주",
+                            momentum_score=20,
+                            market_cap=50_000_000_000),  # 500억
+        _momentum_candidate(stock_code="LARGE1", stock_name="대형주",
+                            momentum_score=10),
+    ]
+    msgs = fmt.format_daily_report(
+        top_10=top_10, warnings=[], stats={},
+        scored_list=scored_list, kospi_index=2500.0,
+    )
+    full = "\n".join(msgs)
+    section = full[full.index("🚀 모멘텀 TOP"):]
+    assert "소형주" not in section
+    assert "대형주" in section
+
+
+def test_momentum_section_excludes_low_volume(fmt: MessageFormatter) -> None:
+    """거래대금 10억 미만은 제외."""
+    top_10 = [_v3_dict(stock_code=f"00593{i}", total_score=80) for i in range(10)]
+    scored_list = [
+        _momentum_candidate(stock_code="DRY001", stock_name="거래미달",
+                            momentum_score=20,
+                            trading_value=500_000_000),  # 5억
+        _momentum_candidate(stock_code="LIQ001", stock_name="유동성정상",
+                            momentum_score=12),
+    ]
+    msgs = fmt.format_daily_report(
+        top_10=top_10, warnings=[], stats={},
+        scored_list=scored_list, kospi_index=2500.0,
+    )
+    full = "\n".join(msgs)
+    section = full[full.index("🚀 모멘텀 TOP"):]
+    assert "거래미달" not in section
+    assert "유동성정상" in section
+
+
+def test_momentum_section_handles_missing_fields_gracefully(
+    fmt: MessageFormatter,
+) -> None:
+    """결손 필드(week52=0, current_price=0)는 — 표시, 예외 없음."""
+    top_10 = [_v3_dict(stock_code=f"00593{i}", total_score=80) for i in range(10)]
+    scored_list = [
+        _momentum_candidate(stock_code="MISS01", stock_name="결손주",
+                            momentum_score=15,
+                            week52_position=0,
+                            current_price=0),
+    ]
+    msgs = fmt.format_daily_report(
+        top_10=top_10, warnings=[], stats={},
+        scored_list=scored_list, kospi_index=2500.0,
+    )
+    full = "\n".join(msgs)
+    section = full[full.index("🚀 모멘텀 TOP"):]
+    assert "결손주" in section
+    # week52=0 → "52주: —"
+    assert "52주: —" in section
+    # current_price=0 → "현재가: —"
+    assert "현재가: —" in section
