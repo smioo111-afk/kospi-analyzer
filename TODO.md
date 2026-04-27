@@ -90,6 +90,17 @@
 
 ## P2 (여유 시)
 
+[P2][TEST] KIS 통합 테스트 갭 점검
+  배경: 묶음 D KOSPI 테스트 3개가 모두 자체 `async with KISClient(...) as kis:`
+        컨텍스트로 호출해서 main.py 실제 사용 패턴(인스턴스 미리 생성 후
+        호출 시점 진입)을 검증 못 함. 4-27 회귀가 통과했음.
+  내용: 다른 KIS aget_* 메서드도 같은 갭 있는지 점검. 인스턴스 재사용
+        패턴 통합 테스트 추가 (aget_stock_price, aget_daily_chart,
+        aget_investor_trading 등).
+  공수: M
+  등록일: 2026-04-27
+  상태: 열림
+
 [P2][FEATURE] 백테스트 엔진 구축
   배경: 백테스트 없이 전략 검증 불가.
   내용: docs/backtest_tech_comparison.md의 결정에 따라 엔진 구축.
@@ -218,6 +229,37 @@
 
 ## P3 (장기 아이디어)
 
+[P3][DATA] 4-27 analysis_results.kospi_index 결손 (1행)
+  배경: 4-27 첫 정상 사이클에서 async with 컨텍스트 버그로 결손.
+        실제 종가 6615.03 확정 (aget_kospi_daily_index + 격리 호출
+        교차 확인). 본 머지로 4-28부터는 정상 수집.
+  내용: 단일 UPDATE로 백필 가능. tools/backfill_kospi_index.py 활용.
+        SQL: UPDATE analysis_results SET kospi_index=6615.03
+             WHERE analysis_date='2026-04-27' AND kospi_index=0
+        데이터 영향 미미 (101개 중 1개)이므로 우선순위 낮음.
+  공수: S
+  등록일: 2026-04-27
+  상태: 보류 (사용자 결정으로 백필 미실시)
+
+[P3][BUG] KOSPI 지수 응답 change_rate=0 의심
+  배경: 4-27 격리 호출 결과 index=6615.03, change=139.4인데
+        change_rate=0.0. change에 비해 change_rate 모순.
+        응답 파싱 또는 KIS 응답 자체 문제 가능.
+  내용: aget_kospi_index 응답 파싱 로직 view + 다른 거래일 표본으로
+        검증. 분석에 직접 사용 안 하지만 데이터 정확성 의심.
+  공수: S
+  등록일: 2026-04-27
+  상태: 열림
+
+[P3][BUG] test_integration.py::test_signals 사전 결함
+  배경: 필터 임계값 IndexError. 여러 PR(묶음 D/E/F + 본 KOSPI 수정)에서
+        무관하다고 넘김. main에 잠복 중.
+  내용: 정확한 원인 규명 (filter_stocks 임계값 vs 테스트 입력) +
+        수정 또는 deprecated 처리.
+  공수: S
+  등록일: 2026-04-27
+  상태: 열림
+
 [P3][REFACTOR] 미호출 public Database 메서드 정리 또는 활용
   배경: 묶음 D-4 조사에서 발견. get_results_by_date, get_delisted_stocks,
         get_fetch_failure_candidates, update_portfolio_stock_names_from_master,
@@ -304,6 +346,25 @@
 ---
 
 ## 완료됨
+
+[P1][BUG] KOSPI 지수 수집 async with 컨텍스트 누락
+  배경: 4-27 첫 정상 사이클 로그에서 발견. main.py:298 호출만 유일하게
+        `async with self.kis:` 블록 밖. KISClient 세션 미초기화로
+        RuntimeError → 분석은 통과했으나 analysis_results.kospi_index=0.0
+        저장 (4-21~24는 6388~6475 정상 범위).
+  내용:
+    1) main.py:297-302 호출을 `async with self.kis:` 블록으로 감쌈
+    2) 회귀 차단 테스트 2건 추가 (test_kis_async.py)
+       - test_kospi_index_outside_context_raises: 컨텍스트 밖 호출 가드 검증
+       - test_kospi_index_main_py_pattern: 인스턴스 재사용 + 시점별 진입 검증
+    3) 묶음 D 테스트 갭 발견 → P2 [TEST] KIS 통합 테스트 갭 점검 등록
+  완료일: 2026-04-27
+  결과:
+    - 커밋 66677f3 main 머지 (squash)
+    - tests/test_kis_async.py 14/14 pass, 회귀 97/98 pass (잔여 1건 무관)
+    - 라이브 호출 6615.03 정상 수신
+    - 봇 재시작 (PID 313961 → 318564), 4-28 사이클부터 정상 수집 예정
+    - 4-27 결손 1행은 P3 [DATA] 보류 (사용자 결정)
 
 [P2][BUG] 금융주 매출 합산 로직 + 호텔신라 부분 결손 (묶음 F)
   배경: sector=금융 32 중 9건 revenue=0, 보험 6 정확하지 않은 단일 라인,
