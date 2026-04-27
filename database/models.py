@@ -108,7 +108,9 @@ class Database:
                 total_score INTEGER DEFAULT 0,
                 value_score INTEGER DEFAULT 0,
                 financial_score INTEGER DEFAULT 0,
+                growth_score INTEGER DEFAULT 0,
                 momentum_score INTEGER DEFAULT 0,
+                quality_score INTEGER DEFAULT 0,
                 signal TEXT DEFAULT '',
                 signal_label TEXT DEFAULT '',
                 reason TEXT DEFAULT '',
@@ -295,6 +297,10 @@ class Database:
             "ADD COLUMN delisted_detected_at TEXT DEFAULT ''",
             "ALTER TABLE performance_tracking "
             "ADD COLUMN consecutive_fetch_failures INTEGER DEFAULT 0",
+            "ALTER TABLE stock_scores "
+            "ADD COLUMN growth_score INTEGER DEFAULT 0",
+            "ALTER TABLE stock_scores "
+            "ADD COLUMN quality_score INTEGER DEFAULT 0",
         ):
             try:
                 conn.execute(ddl)
@@ -429,12 +435,13 @@ class Database:
                 conn.execute(
                     """INSERT OR REPLACE INTO stock_scores
                        (analysis_date, stock_code, stock_name,
-                        total_score, value_score, financial_score, momentum_score,
+                        total_score, value_score, financial_score,
+                        growth_score, momentum_score, quality_score,
                         signal, signal_label, reason,
                         current_price, market_cap, per, pbr,
                         roe, operating_margin, debt_ratio, dividend_yield,
                         stoploss_price, stoploss_pct, atr)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         analysis_date,
                         code,
@@ -442,7 +449,9 @@ class Database:
                         sig.get("total_score", 0),
                         sig.get("value_score", 0),
                         sig.get("financial_score", 0),
+                        sig.get("growth_score", 0),
                         sig.get("momentum_score", 0),
+                        sig.get("quality_score", 0),
                         sig.get("signal", ""),
                         sig.get("signal_label", ""),
                         sig.get("reason", ""),

@@ -384,20 +384,25 @@ def test_database():
         assert_eq(latest["kospi_index"], 2680.5, "KOSPI 지수")
         assert_eq(len(latest["top_10"]), 1, "TOP 10 개수")
 
-        # 종목 스코어 저장
+        # 종목 스코어 저장 (growth/quality 포함)
         count = db.save_stock_scores("2026-04-01", [
             {"stock_code": "005930", "stock_name": "삼성전자", "total_score": 87,
-             "value_score": 35, "financial_score": 28, "momentum_score": 24,
+             "value_score": 35, "financial_score": 28,
+             "growth_score": 18, "momentum_score": 24, "quality_score": 7,
              "signal": "strong_buy", "signal_label": "🟢 강력매수", "reason": "test",
              "current_price": 72300, "market_cap": 432e12, "per": 8.2, "pbr": 0.9,
              "roe": 12.5, "operating_margin": 14.3, "debt_ratio": 45.0, "dividend_yield": 2.5},
         ])
         assert_eq(count, 1, "스코어 1건 저장")
 
-        # 종목 스코어 조회
+        # 종목 스코어 조회 (growth/quality 영구 보존 검증)
         score = db.get_stock_score("005930", "2026-04-01")
         assert_eq(score["total_score"], 87, "삼성전자 87점")
         assert_eq(score["signal"], "strong_buy", "강력매수 신호")
+        assert_true("growth_score" in score, "growth_score 컬럼 존재")
+        assert_true("quality_score" in score, "quality_score 컬럼 존재")
+        assert_eq(score["growth_score"], 18, "성장 18점 영구 보존")
+        assert_eq(score["quality_score"], 7, "퀄리티 7점 영구 보존")
 
         # UPSERT 테스트 (같은 날짜 + 종목 → 업데이트)
         db.save_stock_scores("2026-04-01", [
