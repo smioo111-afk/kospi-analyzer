@@ -90,6 +90,18 @@
 
 ## P2 (여유 시)
 
+[P2][BUG] /stock format_stock_detail merge 순서 결함
+  배경: bot/telegram_bot.py:235 `score = {**v3_log, **score}` — stock_scores가
+        후순위 우선. 4-27처럼 신규 컬럼 추가 직후 사이클에서 INSERT는 옛
+        21-컬럼이라 ALTER로 채워진 default 0이 daily_report_log/top_10_json의
+        정확값을 덮어쓰는 구조. 스키마 변경 직후엔 항상 1회 발생 가능.
+  내용: bot/telegram_bot.py merge 순서 검토:
+        - {**stock_scores, **v3_log} (v3_log 우선)으로 변경 검토
+        - 단 다른 v1 컬럼 충돌 위험 → 컬럼별 우선순위 정의
+  공수: M (회귀 위험 검증 필요)
+  등록일: 2026-04-27
+  상태: 열림
+
 [P2][ANALYSIS] 가치 TOP 10 vs 모멘텀 TOP 10 적중률 비교
   배경: 종합 TOP 10(가치+모멘텀 하이브리드) vs 모멘텀 TOP 10(순수
         모멘텀) 동시 운용. 4-28부터 5월~7월 1m 수익률 누적 후 비교.
@@ -366,6 +378,20 @@
 ---
 
 ## 완료됨
+
+[CHORE] 4-27 stock_scores TOP 10 백필 (growth/quality)
+  배경: 4-27 사이클이 stock_scores 컬럼 추가(e86110d) 이전 실행됨.
+        save_stock_scores INSERT가 옛 21-컬럼이라 ALTER 후 신규
+        growth_score/quality_score가 default 0으로 채워짐.
+        /stock 출력에서 효성 등 TOP 10 종목이 "성장 0/20, 퀄리티 0/10"
+        으로 잘못 표시되는 문제. daily_report_log/top_10_json엔 정확값 보유.
+  완료일: 2026-04-27
+  결과:
+    - analysis_results.top_10_json에서 정확값 추출 → stock_scores 10행 UPDATE
+    - 효성 /stock 격리 검증: 종합 54, 가치 13, 재무 13, 성장 14, 모멘텀 14, 퀄리티 0 (정상)
+    - 4-28 사이클부터는 새 23-컬럼 INSERT가 자연 정상화
+    - 백업: data/kospi_analyzer.db.bak_before_top10_backfill_20260427_2024
+    - 후속 P2: /stock merge 순서 결함
 
 [P1][BUG] FCF 수집 결손 64.5% — account_id/공백 매칭 보강
   배경: 256개 중 165개(64.5%) free_cash_flow=0 강제로 quality_score=0.
