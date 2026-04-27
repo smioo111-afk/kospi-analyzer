@@ -326,3 +326,136 @@ def test_extract_financial_metrics_uses_sector_for_bank(
     )
     # 합산: 이자(27.99조) + 수수료(4.56조) = 32.55조
     assert metrics["revenue"] == 27988801000000 + 4564323000000
+
+
+# ================================================================
+# FCF 매칭 보강 (account_id 우선 + 공백 정규화)
+# ================================================================
+# 배경: 한글 account_nm 공백 변형으로 OCF/CAPEX 매칭이 광범위 실패.
+#       IFRS account_id로 100% 정확 매칭 가능.
+#       docs/fcf_collection_audit_20260427.md 참조.
+
+def test_account_id_match_takes_priority(client: DARTClient) -> None:
+    """account_id가 주어지면 nm보다 우선 매칭."""
+    df = pd.DataFrame([
+        _row("CF", "엉뚱한이름", "999"),
+        _row("CF", "원하는이름", "111"),
+    ])
+    df.loc[0, "account_id"] = "ifrs-full_TARGET"
+    df.loc[1, "account_id"] = "ifrs-full_OTHER"
+    result = client._get_account_value(
+        df, "CF", ["원하는이름"],
+        account_ids=["ifrs-full_TARGET"],
+    )
+    assert result == 999  # account_id 우선
+
+
+def test_account_id_falls_through_to_nm(client: DARTClient) -> None:
+    """account_id 미일치 시 nm 매칭으로 fallback."""
+    df = pd.DataFrame([
+        _row("CF", "원하는이름", "111"),
+    ])
+    df.loc[0, "account_id"] = "ifrs-full_NOMATCH"
+    result = client._get_account_value(
+        df, "CF", ["원하는이름"],
+        account_ids=["ifrs-full_NOTHERE"],
+    )
+    assert result == 111
+
+
+def test_whitespace_normalization_works(client: DARTClient) -> None:
+    """공백 변형 ('영업활동으로 인한 현금흐름') → 정규화로 매칭."""
+    df = pd.DataFrame([
+        _row("CF", "영업활동으로 인한 현금흐름", "421000000000"),
+    ])
+    result = client._get_account_value(
+        df, "CF", ["영업활동현금흐름", "영업활동으로인한현금흐름"],
+    )
+    assert result == 421000000000
+
+
+def test_normalize_nm_strips_spaces() -> None:
+    assert DARTClient._normalize_nm("영업활동으로 인한 현금흐름") == "영업활동으로인한현금흐름"
+    assert DARTClient._normalize_nm("유형자산의 취득") == "유형자산의취득"
+    assert DARTClient._normalize_nm("영업활동현금흐름") == "영업활동현금흐름"
+
+
+# ================================================================
+# 8개 표본 골든값 — 실 캐시 raw + 신규 매칭 로직
+# ================================================================
+def _calc_fcf_from_cache(client: DARTClient, code: str) -> tuple[int, int, int]:
+    """실 캐시에서 OCF/CAPEX/FCF 계산."""
+    df = pd.read_parquet(CACHE_DIR / f"{code}_2025_annual.parquet")
+    ocf = client._get_account_value(
+        df, "CF",
+        ["영업활동현금흐름", "영업활동으로인한현금흐름"],
+        account_ids=["ifrs-full_CashFlowsFromUsedInOperatingActivities"],
+    )
+    capex = abs(client._get_account_value(
+        df, "CF",
+        ["유형자산의취득", "유형자산취득", "투자활동으로인한유형자산취득"],
+        account_ids=[
+            "ifrs-full_PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
+            "ifrs-full_PurchaseOfPropertyPlantAndEquipment",
+        ],
+    ))
+    fcf = ocf - capex if ocf != 0 else 0
+    return ocf, capex, fcf
+
+
+def test_fcf_recovers_004800_효성(client: DARTClient) -> None:
+    """결손 → 회복: OCF/CAPEX/FCF 모두 양수."""
+    ocf, capex, fcf = _calc_fcf_from_cache(client, "004800")
+    assert ocf == 421093178280
+    assert capex == 158920799942
+    assert fcf == ocf - capex
+
+
+def test_fcf_recovers_002790_amorepacific_g(client: DARTClient) -> None:
+    ocf, capex, fcf = _calc_fcf_from_cache(client, "002790")
+    assert ocf == 629668209209
+    assert capex == 76814037729
+    assert fcf > 0
+
+
+def test_fcf_recovers_001040_cj(client: DARTClient) -> None:
+    ocf, capex, fcf = _calc_fcf_from_cache(client, "001040")
+    assert ocf == 4987380240000
+    assert capex == 2335628897000
+    assert fcf > 0
+
+
+def test_fcf_recovers_003550_lg(client: DARTClient) -> None:
+    ocf, capex, fcf = _calc_fcf_from_cache(client, "003550")
+    assert ocf == 1015114000000
+    assert capex == 151375000000
+    assert fcf > 0
+
+
+def test_fcf_recovers_004990_lotte(client: DARTClient) -> None:
+    ocf, capex, fcf = _calc_fcf_from_cache(client, "004990")
+    assert ocf == 1156131183818
+    assert capex > 0
+    assert fcf == ocf - capex
+
+
+def test_fcf_005930_samsung_capex_corrected(client: DARTClient) -> None:
+    """삼성전자: 기존 CAPEX=0 (2.25× 과대) → 정확값으로 정정."""
+    ocf, capex, fcf = _calc_fcf_from_cache(client, "005930")
+    assert ocf == 85315148000000
+    assert capex == 47522179000000  # 기존엔 매칭 실패로 0
+    assert fcf == ocf - capex  # ≈ 37.8조
+
+
+def test_fcf_000150_doosan_capex_corrected(client: DARTClient) -> None:
+    ocf, capex, fcf = _calc_fcf_from_cache(client, "000150")
+    assert ocf == 981908000000
+    assert capex == 570134000000  # 기존엔 0
+    assert fcf == ocf - capex
+
+
+def test_fcf_005440_hyundaigf_capex_corrected(client: DARTClient) -> None:
+    ocf, capex, fcf = _calc_fcf_from_cache(client, "005440")
+    assert ocf == 404603485000
+    assert capex == 147603916000  # 기존엔 0
+    assert fcf == ocf - capex

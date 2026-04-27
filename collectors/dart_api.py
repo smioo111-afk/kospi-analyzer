@@ -393,12 +393,19 @@ class DARTClient:
         )
 
         # 잉여현금흐름 (FCF = 영업활동현금흐름 - 자본적지출)
+        # 한글 account_nm 변형(공백 등)이 광범위하므로 IFRS account_id 우선 매칭.
         operating_cf = self._get_account_value(
-            df, "CF", ["영업활동현금흐름", "영업활동으로인한현금흐름"]
+            df, "CF",
+            ["영업활동현금흐름", "영업활동으로인한현금흐름"],
+            account_ids=["ifrs-full_CashFlowsFromUsedInOperatingActivities"],
         )
         capex = abs(self._get_account_value(
-            df, "CF", ["유형자산의취득", "유형자산취득",
-                       "투자활동으로인한유형자산취득"]
+            df, "CF",
+            ["유형자산의취득", "유형자산취득", "투자활동으로인한유형자산취득"],
+            account_ids=[
+                "ifrs-full_PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
+                "ifrs-full_PurchaseOfPropertyPlantAndEquipment",
+            ],
         ))
         if operating_cf != 0:
             metrics["free_cash_flow"] = operating_cf - capex
@@ -545,11 +552,18 @@ class DARTClient:
         except (ValueError, TypeError):
             return 0.0
 
+    @staticmethod
+    def _normalize_nm(name: str) -> str:
+        # 공백·NBSP 제거: K-IFRS 회사마다 "영업활동현금흐름" vs
+        # "영업활동으로 인한 현금흐름" 식의 공백 변형이 광범위.
+        return str(name).replace(" ", "").replace(" ", "").strip()
+
     def _get_account_value(
         self,
         df: pd.DataFrame,
         sj_div: str,
         account_names: list[str],
+        account_ids: Optional[list[str]] = None,
     ) -> int:
         """재무제표 DataFrame에서 특정 계정과목의 당기 금액을 추출한다.
 
@@ -557,6 +571,7 @@ class DARTClient:
             df: 재무제표 DataFrame
             sj_div: 재무제표 구분 (BS, IS, CF 등)
             account_names: 계정과목명 후보 리스트
+            account_ids: IFRS account_id 후보 리스트 (선택, 최우선 매칭)
 
         Returns:
             int: 금액 (원)
@@ -574,12 +589,26 @@ class DARTClient:
                 continue
             if amount_col not in filtered.columns:
                 continue
-            # 1단계: 정확 일치 (e.g. "매출"이 "매출원가"에 매칭되는 것을 방지)
+            # 1단계: account_id 정확 일치 (IFRS 표준 코드, 회사간 동일)
+            if account_ids and "account_id" in filtered.columns:
+                for aid in account_ids:
+                    match = filtered[filtered["account_id"] == aid]
+                    if not match.empty:
+                        return self._parse_amount(match.iloc[0][amount_col])
+            # 2단계: account_nm 정확 일치 (e.g. "매출" vs "매출원가" 구분)
             for name in account_names:
                 match = filtered[filtered["account_nm"] == name]
                 if not match.empty:
                     return self._parse_amount(match.iloc[0][amount_col])
-            # 2단계: 부분 일치 (e.g. "당기순이익" → "당기순이익(손실)")
+            # 3단계: 공백 정규화 후 정확 일치
+            #   "영업활동으로 인한 현금흐름" → "영업활동으로인한현금흐름" 매칭
+            normalized_col = filtered["account_nm"].fillna("").map(self._normalize_nm)
+            for name in account_names:
+                target = self._normalize_nm(name)
+                match = filtered[normalized_col == target]
+                if not match.empty:
+                    return self._parse_amount(match.iloc[0][amount_col])
+            # 4단계: 부분 일치 (e.g. "당기순이익" → "당기순이익(손실)")
             for name in account_names:
                 match = filtered[
                     filtered["account_nm"].str.contains(name, na=False, regex=False)
