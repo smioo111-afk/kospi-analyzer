@@ -295,7 +295,8 @@ class AnalysisPipeline:
 
             # 7. KOSPI 지수 + 외국인 순매수 합계 (analysis_results용)
             try:
-                kospi_result = await self.kis.aget_kospi_index()
+                async with self.kis:
+                    kospi_result = await self.kis.aget_kospi_index()
                 kospi_index = kospi_result.get("index", 0.0)
             except Exception as e:
                 logger.warning("KOSPI 지수 수집 실패: %s", e)

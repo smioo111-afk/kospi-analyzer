@@ -297,3 +297,29 @@ async def test_kospi_index_empty_output_safe():
             result = await kis.aget_kospi_index()
     assert result["index"] == 0.0
     assert result["change"] == 0.0
+
+
+# ================================================================
+# 11. 컨텍스트 밖 호출 가드 (4-27 회귀: main.py가 컨텍스트 밖에서 호출)
+# ================================================================
+@pytest.mark.asyncio
+async def test_kospi_index_outside_context_raises():
+    """async with 밖에서 aget_kospi_index 호출 시 명확한 RuntimeError."""
+    kis = KISClient(rate_limit_per_sec=100)
+    _install_fake_token(kis)
+    with pytest.raises(RuntimeError, match="async with 컨텍스트 밖"):
+        await kis.aget_kospi_index()
+
+
+@pytest.mark.asyncio
+async def test_kospi_index_main_py_pattern():
+    """main.py의 실제 사용 패턴: 인스턴스를 미리 만들어 두고
+    호출 시점마다 `async with self.kis:` 블록으로 진입한다."""
+    kis = KISClient(rate_limit_per_sec=100)
+    _install_fake_token(kis)
+    with aioresponses() as m:
+        m.get(_kospi_index_url(),
+              payload=_kospi_index_response(2700.5, -3.2, -0.12))
+        async with kis:
+            result = await kis.aget_kospi_index()
+    assert result["index"] == 2700.5
