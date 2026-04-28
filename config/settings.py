@@ -50,6 +50,15 @@ class TelegramConfig:
     ERROR_CHAT_ID: str = os.getenv("TELEGRAM_ERROR_CHAT_ID", "")
     MAX_MESSAGE_LENGTH: int = 4000
 
+    # 명령어 핸들러 화이트리스트. 콤마 구분된 chat_id 문자열을 set으로 파싱.
+    # 미설정/공백이면 CHAT_ID(주 사용자)만 허용 (single-user 운영 기본값).
+    @classmethod
+    def allowed_chat_ids(cls) -> set[str]:
+        raw = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").strip()
+        if not raw:
+            return {cls.CHAT_ID} if cls.CHAT_ID else set()
+        return {x.strip() for x in raw.split(",") if x.strip()}
+
 
 class ScoringConfig:
     """종합 스코어링 기준 100점 만점 (v3.0).

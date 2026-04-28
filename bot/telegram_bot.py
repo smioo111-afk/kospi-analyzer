@@ -68,20 +68,43 @@ class KOSPIBot:
             builder = builder.post_init(post_init)
         self._app = builder.build()
 
-        # 명령어 핸들러 등록
-        self._app.add_handler(CommandHandler("start", self._cmd_start))
-        self._app.add_handler(CommandHandler("help", self._cmd_help))
-        self._app.add_handler(CommandHandler("commands", self._cmd_help))
-        self._app.add_handler(MessageHandler(filters.Regex(r'^/명령어$'), self._cmd_help))
-        self._app.add_handler(CommandHandler("report", self._cmd_report))
-        self._app.add_handler(CommandHandler("stock", self._cmd_stock))
-        self._app.add_handler(CommandHandler("history", self._cmd_history))
-        self._app.add_handler(CommandHandler("watchlist", self._cmd_watchlist))
-        self._app.add_handler(CommandHandler("stoploss", self._cmd_stoploss))
-        self._app.add_handler(CommandHandler("buy", self._cmd_buy))
-        self._app.add_handler(CommandHandler("sell", self._cmd_sell))
-        self._app.add_handler(CommandHandler("portfolio", self._cmd_portfolio))
-        self._app.add_handler(CommandHandler("performance", self._cmd_performance))
+        # 화이트리스트 chat_id만 통과시키는 필터.
+        # TELEGRAM_ALLOWED_CHAT_IDS 환경변수(콤마 구분)가 비면 CHAT_ID만 허용.
+        allowed_raw = self.cfg.allowed_chat_ids()
+        allowed_ids: set[int] = set()
+        for x in allowed_raw:
+            try:
+                allowed_ids.add(int(x))
+            except (TypeError, ValueError):
+                logger.warning("ALLOWED_CHAT_IDS 파싱 실패 (무시): %r", x)
+        if not allowed_ids:
+            # 화이트리스트가 비면 모든 명령 차단 (보안 fail-closed).
+            logger.error(
+                "TELEGRAM_CHAT_ID/ALLOWED_CHAT_IDS 미설정 — 모든 봇 명령이 차단됩니다."
+            )
+            chat_filter = filters.Chat(chat_id={-1})  # 절대 매칭 안 되는 더미
+        else:
+            chat_filter = filters.Chat(chat_id=allowed_ids)
+            logger.info(
+                "봇 명령 화이트리스트: %d개 chat_id (%s)",
+                len(allowed_ids),
+                ", ".join(str(i) for i in sorted(allowed_ids)),
+            )
+
+        # 명령어 핸들러 등록 (모두 chat_filter로 권한 검증)
+        self._app.add_handler(CommandHandler("start", self._cmd_start, filters=chat_filter))
+        self._app.add_handler(CommandHandler("help", self._cmd_help, filters=chat_filter))
+        self._app.add_handler(CommandHandler("commands", self._cmd_help, filters=chat_filter))
+        self._app.add_handler(MessageHandler(filters.Regex(r'^/명령어$') & chat_filter, self._cmd_help))
+        self._app.add_handler(CommandHandler("report", self._cmd_report, filters=chat_filter))
+        self._app.add_handler(CommandHandler("stock", self._cmd_stock, filters=chat_filter))
+        self._app.add_handler(CommandHandler("history", self._cmd_history, filters=chat_filter))
+        self._app.add_handler(CommandHandler("watchlist", self._cmd_watchlist, filters=chat_filter))
+        self._app.add_handler(CommandHandler("stoploss", self._cmd_stoploss, filters=chat_filter))
+        self._app.add_handler(CommandHandler("buy", self._cmd_buy, filters=chat_filter))
+        self._app.add_handler(CommandHandler("sell", self._cmd_sell, filters=chat_filter))
+        self._app.add_handler(CommandHandler("portfolio", self._cmd_portfolio, filters=chat_filter))
+        self._app.add_handler(CommandHandler("performance", self._cmd_performance, filters=chat_filter))
 
         logger.info("텔레그램 봇 초기화 완료")
         return self._app
