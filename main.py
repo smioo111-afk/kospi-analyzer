@@ -19,6 +19,7 @@ from typing import Any, Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from analysis.admin_filter import filter_admin_stocks
 from analysis.scorer import ScoringEngine
 from analysis.signals import SignalGenerator
 from analysis.stoploss import StopLossCalculator
@@ -506,6 +507,9 @@ class AnalysisPipeline:
                 "PER/PBR 보강 조회 %d/%d 완료",
                 enriched, len(price_list),
             )
+
+            # 관리종목·거래정지 필터 (PER/PBR 보강 후 admin 필드가 채워진 시점).
+            price_list, _ = filter_admin_stocks(price_list)
         else:
             # === 화~금: 대상 종목만 개별 시세 조회 ===
             logger.info("대상 %d 종목 개별 시세 조회...", len(target_codes))
@@ -531,6 +535,9 @@ class AnalysisPipeline:
                     "종목명 stock_master 보강: %d건 채움, %d건 미해결",
                     filled, missing,
                 )
+
+            # 관리종목·거래정지 필터 (개별 시세 조회 응답에 admin 필드 포함됨).
+            price_list, _ = filter_admin_stocks(price_list)
 
         return price_list
 

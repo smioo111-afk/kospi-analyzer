@@ -658,6 +658,12 @@ class KISClient:
             "bps": self._safe_int(raw.get("bps", "0")),
             "high_52w": self._safe_int(raw.get("stck_dryc_hgpr", "0")),
             "low_52w": self._safe_int(raw.get("stck_dryc_lwpr", "0")),
+            # 관리종목·거래정지 필드 (admin filter용).
+            # iscd_stat_cls_code: 51=관리, 55=정상, 58=거래정지
+            "iscd_stat_cls_code": raw.get("iscd_stat_cls_code", "") or "",
+            "mang_issu_cls_code": raw.get("mang_issu_cls_code", "") or "",
+            "temp_stop_yn": raw.get("temp_stop_yn", "") or "",
+            "sltr_yn": raw.get("sltr_yn", "") or "",
         }
 
     def _parse_daily_candle(
