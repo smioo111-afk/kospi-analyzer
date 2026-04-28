@@ -319,9 +319,17 @@ class ScoringEngine:
         fair_low = int(sum(w * lo for w, lo, _ in models) / total_weight)
         fair_high = int(sum(w * hi for w, _, hi in models) / total_weight)
 
-        # 괴리율: 음수=저평가, 양수=고평가
-        if fair_low > 0:
+        # 괴리율: 음수=저평가, 0=적정 범위 내, 양수=고평가
+        # 적정 범위 [fair_low, fair_high] 안이면 0% (적정).
+        # 미만이면 fair_low 대비 음수, 초과면 fair_high 대비 양수.
+        # 과거에는 항상 fair_low 단일 기준이라, 적정 범위 안 종목도
+        # 큰 양수 ("+85% 고평가")로 표시되던 결함 수정.
+        if fair_low <= 0:
+            gap_pct = 0.0
+        elif current_price < fair_low:
             gap_pct = round(((current_price - fair_low) / fair_low) * 100, 1)
+        elif current_price > fair_high:
+            gap_pct = round(((current_price - fair_high) / fair_high) * 100, 1)
         else:
             gap_pct = 0.0
 
