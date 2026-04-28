@@ -745,6 +745,22 @@ def start_scheduler() -> None:
         misfire_grace_time=7200,
     )
 
+    # 매일 16:00 자가 진단 (분석 사이클 후 데이터 무결성 + 로직 정합성 검증).
+    # warning/fail 발생 시만 텔레그램 알림. 평소엔 logs/health_check.log에만 기록.
+    from monitoring.health_check import scheduled_health_check
+    scheduler.add_job(
+        scheduled_health_check,
+        CronTrigger(
+            hour=16, minute=0,
+            day_of_week="mon-fri",
+            timezone=SchedulerConfig.TIMEZONE,
+        ),
+        id="daily_health_check",
+        name="자가 진단 (Tier 1+2)",
+        misfire_grace_time=3600,
+    )
+    logger.info("스케줄러 등록: 매일 16:00 자가 진단")
+
     # 일회성: performance_tracking 유효 샘플 30건 도달 시 텔레그램 알림.
     # 플래그 파일 존재하면 잡 내부에서 즉시 종료 (재발송 방지).
     # 알림 수신 후 docs/sample_notifier_cleanup.md 절차로 제거.

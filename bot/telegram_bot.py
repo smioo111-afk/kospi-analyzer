@@ -624,6 +624,29 @@ class KOSPIBot:
         except Exception as e:
             logger.error("신호 변경 알림 발송 실패: %s", e)
 
+    async def send_health_alert(self, report: Any) -> None:
+        """health check 위반 알림을 발송한다 (warning/fail 시).
+
+        report: monitoring.health_check.HealthCheckReport
+        """
+        chat_id = self.cfg.ERROR_CHAT_ID or self.cfg.CHAT_ID
+        if not self.cfg.BOT_TOKEN or not chat_id:
+            return
+
+        try:
+            text = report.format_text()
+        except Exception as e:
+            logger.error("health_alert 포맷 실패: %s", e)
+            return
+
+        try:
+            from telegram import Bot
+
+            bot = Bot(token=self.cfg.BOT_TOKEN)
+            await bot.send_message(chat_id=chat_id, text=text)
+        except Exception as e:
+            logger.error("health_alert 발송 실패: %s", e)
+
     async def send_performance_report(self, period: str = "monthly") -> bool:
         """성과 리포트를 자동 발송한다."""
         if not self.cfg.BOT_TOKEN or not self.cfg.CHAT_ID:
