@@ -1,0 +1,4 @@
+config/settings.py:32:    # [DEPRECATED] sync 동기 클라이언트 시절 호출 간격(초). v4.0 async 전환 후
+analysis/signals.py:225:        TODO: 실제 업종코드 매핑 필요. 현재는 간이 판별.
+collectors/dart_api.py:35:# TODO: 신규 종목 상장/지정 시 갱신 필요.
+bot/telegram_bot.py:321:            # TODO: 사용자별 설정 저장
