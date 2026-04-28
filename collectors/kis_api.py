@@ -130,13 +130,26 @@ class KISTokenManager:
 
     def _save_token_to_cache(self) -> None:
         try:
-            self._token_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            # 토큰 디렉토리는 owner-only (0o700). 토큰 파일은 0o600.
+            # 다른 사용자가 access_token을 읽지 못하게 한다 (defense in depth).
+            self._token_cache_path.parent.mkdir(
+                parents=True, exist_ok=True, mode=0o700,
+            )
+            try:
+                # 기존 디렉토리 권한 보강 (mkdir mode는 신규 생성 시에만 적용).
+                os.chmod(self._token_cache_path.parent, 0o700)
+            except OSError:
+                pass
             cache_data = {
                 "access_token": self._access_token,
                 "expired_at": self._token_expired_at.isoformat(),
             }
             self._token_cache_path.write_text(
                 json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
+            try:
+                os.chmod(self._token_cache_path, 0o600)
+            except OSError as e:
+                logger.warning("토큰 캐시 권한 설정 실패: %s", e)
         except OSError as e:
             logger.warning("토큰 캐시 저장 실패: %s", e)
 
