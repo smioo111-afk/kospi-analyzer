@@ -72,12 +72,14 @@ def _kospi_index_url() -> str:
 def _kospi_index_response(price: float = 2700.5,
                           change: float = -3.2,
                           rate: float = -0.12) -> dict:
+    # 인덱스 응답 등락률 키는 bstp_nmix_prdy_ctrt
+    # (개별 종목용 prdy_ctrt와 다름).
     return {
         "rt_cd": "0",
         "output": {
             "bstp_nmix_prpr": f"{price}",
             "bstp_nmix_prdy_vrss": f"{change}",
-            "prdy_ctrt": f"{rate}",
+            "bstp_nmix_prdy_ctrt": f"{rate}",
         },
     }
 
