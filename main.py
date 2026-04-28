@@ -160,35 +160,17 @@ class AnalysisPipeline:
             return []
 
     def _determine_target_codes(self) -> Optional[list[str]]:
-        """요일에 따라 분석 대상 종목을 결정한다.
+        """분석 대상 종목을 결정한다 (현 정책: 매일 풀 스캔).
 
-        월요일(weekday=0): None (전종목 스캔)
-        화~금(weekday=1~4): TOP 50 + 포트폴리오 종목
+        2026-04-28부터 매일 코스피 전종목(~930) 분석. 풀 스캔 측정
+        결과 2분 44초로 양호하고, TOP 50 추적 모드는 신규 종목 발견을
+        놓치는 위험이 있어 제거됨.
+
+        `_get_top_stock_codes`는 향후 별도 명령(예: 빠른 추적 사이클)
+        에서 재활용 가능하도록 보존한다.
         """
-        weekday = datetime.now().weekday()
-
-        if weekday == 0:
-            logger.info("📊 월요일 전종목 스캔 모드")
-            return None
-
-        # 화~금: TOP 50 + 포트폴리오
-        top_codes = self._get_top_stock_codes(50)
-        portfolio = self.db.get_portfolio()
-        portfolio_codes = {p["stock_code"] for p in portfolio} if portfolio else set()
-        combined = list(set(top_codes) | portfolio_codes)
-
-        if not combined:
-            logger.info("이전 분석 결과 없음 → 전종목 스캔으로 전환")
-            return None
-
-        day_names = {1: "화", 2: "수", 3: "목", 4: "금"}
-        day_name = day_names.get(weekday, str(weekday))
-        logger.info(
-            "📋 %s요일 TOP 50 + 포트폴리오 업데이트 모드 "
-            "(TOP %d + 포트폴리오 %d = 합산 %d종목)",
-            day_name, len(top_codes), len(portfolio_codes), len(combined),
-        )
-        return combined
+        logger.info("📊 일일 풀 스캔 모드 (코스피 전종목)")
+        return None
 
     async def run(self) -> bool:
         """전체 파이프라인을 실행한다.
@@ -660,8 +642,7 @@ class AnalysisPipeline:
 async def scheduled_analysis() -> None:
     """스케줄러에서 호출하는 분석 작업.
 
-    월요일: 전종목 스캔 (업종별 분할 조회, ~900종목)
-    화~금: TOP 50 + 포트폴리오 종목만 업데이트 (개별 시세 조회)
+    매일 풀 스캔 (코스피 전종목, ~930종목, 약 2분 44초).
     """
     # is_trading_day()는 sync KIS 래퍼(check_token, get_stock_price)를 호출한다.
     # 이벤트 루프 안에서 직접 호출하면 _run_sync가 RuntimeError를 던지므로
@@ -670,9 +651,7 @@ async def scheduled_analysis() -> None:
         logger.info("오늘은 휴장일입니다. 분석을 건너뜁니다.")
         return
 
-    weekday = datetime.now().weekday()
-    mode = "전종목 스캔" if weekday == 0 else "TOP 50 + 포트폴리오 업데이트"
-    logger.info("스케줄러 분석 시작 (%s)", mode)
+    logger.info("스케줄러 분석 시작 (일일 풀 스캔)")
 
     pipeline = AnalysisPipeline()
     try:
