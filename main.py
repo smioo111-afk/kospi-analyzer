@@ -745,6 +745,22 @@ def start_scheduler() -> None:
         misfire_grace_time=7200,
     )
 
+    # 매일 16:30 자동 DB 백업 (health check 후, retain 30일).
+    # 기존 .bak_before_* 수동 백업은 패턴 매칭으로 보존됨.
+    from tools.backup_db import scheduled_auto_backup
+    scheduler.add_job(
+        scheduled_auto_backup,
+        CronTrigger(
+            hour=16, minute=30,
+            day_of_week="mon-fri",
+            timezone=SchedulerConfig.TIMEZONE,
+        ),
+        id="daily_auto_backup",
+        name="자동 DB 백업 (30일 retention)",
+        misfire_grace_time=3600,
+    )
+    logger.info("스케줄러 등록: 매일 16:30 자동 DB 백업")
+
     # 매일 16:00 자가 진단 (분석 사이클 후 데이터 무결성 + 로직 정합성 검증).
     # warning/fail 발생 시만 텔레그램 알림. 평소엔 logs/health_check.log에만 기록.
     from monitoring.health_check import scheduled_health_check
