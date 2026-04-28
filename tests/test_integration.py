@@ -285,11 +285,11 @@ def test_signals():
     r = gen.determine_signal(make(90, 15, 18, 15), stoploss_hit=True)
     assert_eq(r["signal"], Signal.SELL, "손절 도달 → 매도 (점수 무관)")
 
-    # 필터링 테스트 (시총 1000억↑, 거래대금 10억↑)
+    # 필터링 테스트 (SignalConfig: 시총 5000억↑, 거래대금 50억↑)
     stocks = [
-        {"stock_code": "A", "market_cap": 200e9, "trading_value": 50e9, "total_score": 80},
-        {"stock_code": "B", "market_cap": 50e9, "trading_value": 50e9, "total_score": 90},  # 시총 미달
-        {"stock_code": "C", "market_cap": 200e9, "trading_value": 5e8, "total_score": 85},  # 거래 미달
+        {"stock_code": "A", "market_cap": 600e9, "trading_value": 100e9, "total_score": 80},
+        {"stock_code": "B", "market_cap": 100e9, "trading_value": 100e9, "total_score": 90},  # 시총 미달
+        {"stock_code": "C", "market_cap": 600e9, "trading_value": 1e9, "total_score": 85},   # 거래 미달
     ]
     fins = [{"stock_code": "A", "consecutive_loss_years": 0},
             {"stock_code": "B", "consecutive_loss_years": 0},
