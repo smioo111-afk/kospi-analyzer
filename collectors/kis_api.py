@@ -468,7 +468,9 @@ class KISClient:
         return {
             "index": self._safe_float(out.get("bstp_nmix_prpr", "0")),
             "change": self._safe_float(out.get("bstp_nmix_prdy_vrss", "0")),
-            "change_rate": self._safe_float(out.get("prdy_ctrt", "0")),
+            # 인덱스 API는 등락률을 bstp_nmix_prdy_ctrt 로 내려보낸다.
+            # 개별 종목용 prdy_ctrt와 다른 키 — 혼동해 0.0이 되던 silent fail 수정.
+            "change_rate": self._safe_float(out.get("bstp_nmix_prdy_ctrt", "0")),
         }
 
     async def aget_kospi_stock_list(self) -> list[dict[str, Any]]:
