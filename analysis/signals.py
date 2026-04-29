@@ -180,7 +180,7 @@ class SignalGenerator:
             fin_map = {f["stock_code"]: f for f in financial_list}
 
         filtered: list[dict[str, Any]] = []
-        excluded_count = {"market_cap": 0, "trading": 0, "financial": 0, "loss": 0}
+        excluded_count = {"market_cap": 0, "trading": 0, "loss": 0}
 
         for stock in scored_list:
             code = stock.get("stock_code", "")
@@ -197,9 +197,6 @@ class SignalGenerator:
                 excluded_count["trading"] += 1
                 continue
 
-            # 금융주 표시 (제외하지 않고 태그만 추가)
-            stock["is_financial"] = self._is_financial_sector(code)
-
             # 3년 연속 적자 제외
             fin_data = fin_map.get(code, {})
             loss_years = fin_data.get("consecutive_loss_years", 0)
@@ -211,21 +208,13 @@ class SignalGenerator:
 
         logger.info(
             "필터링 결과: %d/%d 종목 통과 "
-            "(제외 - 시총: %d, 거래: %d, 금융: %d, 적자: %d)",
+            "(제외 - 시총: %d, 거래: %d, 적자: %d)",
             len(filtered), len(scored_list),
             excluded_count["market_cap"], excluded_count["trading"],
-            excluded_count["financial"], excluded_count["loss"],
+            excluded_count["loss"],
         )
 
         return filtered
-
-    def _is_financial_sector(self, stock_code: str) -> bool:
-        """금융주 여부를 판단한다.
-
-        TODO: 실제 업종코드 매핑 필요. 현재는 간이 판별.
-        """
-        # 추후 KRX 업종 데이터와 연동
-        return False
 
     # ================================================================
     # TOP N 선별
