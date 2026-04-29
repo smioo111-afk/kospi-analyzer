@@ -51,6 +51,10 @@ class Database:
         self.db_path = db_path or DBConfig.DB_PATH
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
+        # 가장 최근 update_performance_tracking 호출에서 발생한 cascade
+        # skip 이벤트. main.py가 사이클 종료 시 텔레그램 WARN으로 발송한다.
+        # 호출 시작 시점에 빈 리스트로 리셋된다.
+        self.last_cascade_skip_events: list[dict[str, Any]] = []
         self._init_tables()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -1231,6 +1235,8 @@ class Database:
         today = datetime.now()
         today_str = today.strftime("%Y-%m-%d")
         updated = 0
+        # 호출 단위 cascade skip 이벤트 리셋 — 매 사이클 시작 시 비움.
+        self.last_cascade_skip_events = []
 
         # 기간 기준 (일수)
         periods = {
@@ -1360,6 +1366,18 @@ class Database:
                             "카운터만 유지하고 상장폐지 판정은 미수행.",
                             code, new_failures, reason,
                         )
+                        # 운영자 알림용 이벤트 적재. main.py가 사이클 끝에
+                        # 텔레그램 WARN으로 일괄 전송한다.
+                        self.last_cascade_skip_events.append({
+                            "stock_code": code,
+                            "stock_name": row["stock_name"],
+                            "report_date": report_date,
+                            "consecutive_failures": new_failures,
+                            "last_exception": last_exception_by_code.get(
+                                code, "n/a"
+                            ),
+                            "reason": reason,
+                        })
                     else:
                         logger.error(
                             "자동 상장폐지 판정: %s (누적 실패 %d회, "

@@ -647,6 +647,42 @@ class KOSPIBot:
         except Exception as e:
             logger.error("신호 변경 알림 발송 실패: %s", e)
 
+    async def send_cascade_skip_alert(
+        self, events: list[dict[str, Any]],
+    ) -> None:
+        """cascade 안전장치 발동 시 운영자에게 WARN을 발송한다.
+
+        events: Database.last_cascade_skip_events 형식의 dict 리스트.
+            각 항목에 stock_code, stock_name, report_date,
+            consecutive_failures, last_exception, reason 포함.
+        """
+        if not events:
+            return
+        chat_id = self.cfg.ERROR_CHAT_ID or self.cfg.CHAT_ID
+        if not self.cfg.BOT_TOKEN or not chat_id:
+            return
+
+        lines = [f"⚠️ cascade 안전장치 발동 ({len(events)}건)", ""]
+        for ev in events[:10]:
+            lines.append(
+                f"- {ev.get('stock_code')} {ev.get('stock_name', '')} "
+                f"(report={ev.get('report_date')}, "
+                f"실패 {ev.get('consecutive_failures')}회, "
+                f"예외={ev.get('last_exception')}, "
+                f"사유={ev.get('reason')})"
+            )
+        if len(events) > 10:
+            lines.append(f"... ({len(events) - 10}건 추가)")
+        msg = "\n".join(lines)
+
+        try:
+            from telegram import Bot
+
+            bot = Bot(token=self.cfg.BOT_TOKEN)
+            await bot.send_message(chat_id=chat_id, text=msg)
+        except Exception as e:
+            logger.error("cascade_skip_alert 발송 실패: %s", e)
+
     async def send_health_alert(self, report: Any) -> None:
         """health check 위반 알림을 발송한다 (warning/fail 시).
 

@@ -427,6 +427,57 @@ def test_cascade_circuit_breaker_caps_per_cycle() -> None:
 
 
 # ================================================================
+# E-3: cascade skip 이벤트 기록 (텔레그램 WARN 트리거 소스)
+# ================================================================
+def test_cascade_skip_event_recorded_on_runtime_error() -> None:
+    """RuntimeError 안전장치 발동 시 last_cascade_skip_events에 적재된다."""
+    db = _make_db()
+    report_date = _report_date_weeks_ago(5)
+    _seed_report(db, report_date, "111111", 10000, signal="strong_buy")
+
+    fake = FakeKIS(
+        {"111111": ["raise", "raise", "raise"]},
+        exception_cls=RuntimeError,
+    )
+    for _ in range(3):
+        db.update_performance_tracking(fake)
+
+    events = db.last_cascade_skip_events
+    assert len(events) >= 1, (
+        f"runtime 예외 cascade skip이 기록되지 않음: {events}"
+    )
+    ev = events[-1]
+    assert ev["stock_code"] == "111111"
+    assert ev["consecutive_failures"] >= 3
+    assert ev["last_exception"] == "RuntimeError"
+    assert "RuntimeError" in ev.get("reason", "") or ev.get("reason")
+
+
+def test_cascade_skip_events_reset_each_call() -> None:
+    """두 번째 호출 시작 시 events 리스트가 비워진다."""
+    db = _make_db()
+    report_date = _report_date_weeks_ago(5)
+    _seed_report(db, report_date, "222222", 5000)
+
+    fake = FakeKIS(
+        {"222222": ["raise"] * 6},
+        exception_cls=RuntimeError,
+    )
+    for _ in range(3):
+        db.update_performance_tracking(fake)
+    first = list(db.last_cascade_skip_events)
+    assert first, "1차 호출에서 이벤트가 적재되어야"
+
+    # 정상 응답 시나리오로 추가 호출 — 이벤트 리스트 비워져야
+    fake2 = FakeKIS({"333333": [9999]})
+    _seed_report(db, report_date, "333333", 9999)
+    db.update_performance_tracking(fake2)
+    assert db.last_cascade_skip_events == [], (
+        "정상 호출 후 events가 리셋되지 않음"
+    )
+
+
+# ================================================================
 # 메인
 # ================================================================
 def main() -> int:
@@ -439,6 +490,8 @@ def main() -> int:
     test_cascade_skipped_on_large_cap()
     test_cascade_still_fires_for_small_cap_real_error()
     test_cascade_circuit_breaker_caps_per_cycle()
+    test_cascade_skip_event_recorded_on_runtime_error()
+    test_cascade_skip_events_reset_each_call()
 
     print(f"\n{'='*60}")
     print(f"결과: PASS={_pass} FAIL={_fail}")

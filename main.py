@@ -409,6 +409,17 @@ class AnalysisPipeline:
                 )
                 if updated > 0:
                     logger.info("성과 추적 %d건 업데이트 완료", updated)
+                # 사이클 동안 발생한 cascade skip 이벤트가 있으면 운영자에게
+                # 텔레그램 WARN. 이벤트는 update_performance_tracking 내부에서
+                # last_cascade_skip_events에 적재된다.
+                skip_events = list(
+                    getattr(self.db, "last_cascade_skip_events", [])
+                )
+                if skip_events:
+                    try:
+                        await self.bot.send_cascade_skip_alert(skip_events)
+                    except Exception as e:
+                        logger.warning("cascade skip 알림 발송 실패: %s", e)
             except Exception as e:
                 logger.warning("성과 추적 업데이트 실패: %s", e)
 
