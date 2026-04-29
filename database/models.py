@@ -805,34 +805,6 @@ class Database:
             logger.debug("stock_master 조회 실패 %s: %s", stock_code, e)
             return ""
 
-    def update_portfolio_stock_names_from_master(self) -> int:
-        """portfolio 테이블에서 stock_name이 비어있는 row를 stock_master에서
-        찾아 일괄 UPDATE한다.
-
-        Returns:
-            int: 업데이트된 row 수.
-        """
-        conn = self._get_conn()
-        cursor = conn.execute(
-            """
-            UPDATE portfolio
-               SET stock_name = (
-                   SELECT stock_name FROM stock_master
-                    WHERE stock_master.stock_code = portfolio.stock_code
-               )
-             WHERE (stock_name = '' OR stock_name IS NULL)
-               AND EXISTS (
-                   SELECT 1 FROM stock_master
-                    WHERE stock_master.stock_code = portfolio.stock_code
-               )
-            """
-        )
-        updated = cursor.rowcount
-        conn.commit()
-        if updated > 0:
-            logger.info("portfolio stock_name 보강: %d건", updated)
-        return updated
-
     # ================================================================
     # 종목 검색
     # ================================================================
