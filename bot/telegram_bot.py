@@ -581,8 +581,13 @@ class KOSPIBot:
         prev_top_10: Optional[list[dict[str, Any]]] = None,
         portfolio_scores_map: Optional[dict[str, dict[str, Any]]] = None,
         scored_list: Optional[list[dict[str, Any]]] = None,
+        disclosure_impacts: Optional[list[Any]] = None,
     ) -> bool:
-        """일일 분석 리포트를 자동 발송한다."""
+        """일일 분석 리포트를 자동 발송한다.
+
+        disclosure_impacts: A1 Phase 4 자정 모니터 결과. None이면 오늘자
+        analysis_date로 disclosure_impacts 테이블에서 자동 로드.
+        """
         if not self.cfg.BOT_TOKEN or not self.cfg.CHAT_ID:
             logger.error("텔레그램 설정 누락 (BOT_TOKEN 또는 CHAT_ID)")
             return False
@@ -596,6 +601,16 @@ class KOSPIBot:
             except Exception:
                 pass
 
+        # 공시 영향 자동 로드 (Phase 4)
+        if disclosure_impacts is None:
+            try:
+                from datetime import date
+                today_str = date.today().strftime("%Y-%m-%d")
+                disclosure_impacts = self.db.get_disclosure_impacts(today_str)
+            except Exception as e:
+                logger.warning("공시 영향 로드 실패 (skip): %s", e)
+                disclosure_impacts = []
+
         messages = self.formatter.format_daily_report(
             top_10=top_10,
             warnings=warnings,
@@ -606,6 +621,7 @@ class KOSPIBot:
             foreign_net_buy=foreign_net_buy,
             prev_top_10=prev_top_10,
             scored_list=scored_list,
+            disclosure_impacts=disclosure_impacts,
         )
 
         try:

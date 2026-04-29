@@ -733,6 +733,119 @@ async def scheduled_analysis() -> None:
         pipeline.cleanup()
 
 
+async def daily_disclosure_monitor() -> None:
+    """A1 Phase 4: 매일 00:00 KOSPI 공시 모니터.
+
+    어제(일자 = today-1) DART 공시를 조회해 분석 종목에 한해 영향을
+    분류한다. PERIODIC/AMENDMENT/MA 공시는 financial_metrics를 강제
+    재수집 + scorer로 점수 재계산해 disclosure_impacts 테이블에 저장.
+    당일 일일 리포트(15:43)가 본 테이블에서 오늘자 행을 읽어 사용자
+    화면에 노출한다.
+
+    실패는 ERROR 로그 + send_error_alert로 흡수 — 정기 분석 사이클은
+    별개 잡이라 본 모니터 실패가 main pipeline을 막지 않는다.
+    """
+    import uuid
+    from datetime import date, timedelta
+    from analysis.disclosure_impact import process_disclosures
+    from analysis.scorer import ScoringEngine
+    from collectors.dart_api import DARTClient
+    from collectors.dart_disclosure import fetch_disclosures
+
+    trace_id = uuid.uuid4().hex[:8]
+    logger.info("[disclosure_monitor:%s] 시작", trace_id)
+
+    yesterday = date.today() - timedelta(days=1)
+    today_str = date.today().strftime("%Y-%m-%d")
+    bgn = end = yesterday.strftime("%Y%m%d")
+
+    db = Database()
+    bot = KOSPIBot(db)
+    try:
+        analyzed_codes: set[str] = set()
+        try:
+            conn = db._get_conn()
+            rows = conn.execute(
+                "SELECT DISTINCT stock_code FROM financial_metrics"
+            ).fetchall()
+            analyzed_codes = {r["stock_code"] for r in rows}
+        except Exception as e:
+            logger.warning(
+                "[disclosure_monitor:%s] 분석 종목 조회 실패: %s",
+                trace_id, e,
+            )
+
+        dart = DARTClient()
+        try:
+            disclosures = fetch_disclosures(
+                date_from=bgn, date_to=end, corp_cls="Y",
+                analyzed_codes=analyzed_codes or None, client=dart,
+            )
+        except Exception as e:
+            logger.error(
+                "[disclosure_monitor:%s] 공시 조회 실패: %s",
+                trace_id, e,
+            )
+            try:
+                await bot.send_error_alert(
+                    f"[trace={trace_id}] 공시 모니터 조회 실패: {e}",
+                    "disclosure_monitor",
+                )
+            except Exception:
+                pass
+            return
+
+        if not disclosures:
+            logger.info(
+                "[disclosure_monitor:%s] 어제 %s 공시 0건",
+                trace_id, bgn,
+            )
+            return
+        logger.info(
+            "[disclosure_monitor:%s] 어제 %s 분석종목 공시 %d건",
+            trace_id, bgn, len(disclosures),
+        )
+
+        scorer = ScoringEngine()
+        scorer.set_db(db)
+        try:
+            impacts = process_disclosures(
+                db=db, dart_client=dart, scorer=scorer,
+                disclosures=disclosures, year=yesterday.year,
+                cache_dir="data/dart_cache", save_to_db=True,
+            )
+        except Exception as e:
+            logger.error(
+                "[disclosure_monitor:%s] 영향 분석 실패: %s",
+                trace_id, e, exc_info=True,
+            )
+            try:
+                await bot.send_error_alert(
+                    f"[trace={trace_id}] 공시 영향 분석 실패: {e}",
+                    "disclosure_monitor",
+                )
+            except Exception:
+                pass
+            return
+
+        saved = 0
+        try:
+            saved = db.save_disclosure_impacts_batch(today_str, impacts)
+        except Exception as e:
+            logger.error(
+                "[disclosure_monitor:%s] DB 저장 실패: %s",
+                trace_id, e,
+            )
+
+        logger.info(
+            "[disclosure_monitor:%s] 완료: 공시 %d건, 재수집 %d건, "
+            "DB 저장 %d건",
+            trace_id, len(disclosures), len(impacts), saved,
+        )
+    finally:
+        db.close()
+
+
 async def scheduled_performance_report() -> None:
     """월간/분기/반기/연간 성과 리포트를 발송한다.
 
@@ -835,6 +948,22 @@ def start_scheduler() -> None:
         misfire_grace_time=3600,
     )
     logger.info("스케줄러 등록: 매일 16:00 자가 진단")
+
+    # A1 Phase 4: 매일 00:00 공시 모니터.
+    # 어제 KOSPI 공시 → 분석 종목 한정 영향 분석 + impacts 저장.
+    # 당일 15:43 일일 리포트에서 자동 로드되어 화면에 노출.
+    # 휴일 무관 매일 실행 (DART 공시는 휴일에도 일부 발생).
+    scheduler.add_job(
+        daily_disclosure_monitor,
+        CronTrigger(
+            hour=0, minute=0,
+            timezone=SchedulerConfig.TIMEZONE,
+        ),
+        id="daily_disclosure_monitor",
+        name="공시 모니터 (어제 → 영향 분석)",
+        misfire_grace_time=3600,
+    )
+    logger.info("스케줄러 등록: 매일 00:00 공시 모니터")
 
     # 일회성: performance_tracking 유효 샘플 30건 도달 시 텔레그램 알림.
     # 플래그 파일 존재하면 잡 내부에서 즉시 종료 (재발송 방지).

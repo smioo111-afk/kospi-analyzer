@@ -281,6 +281,29 @@ class Database:
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
 
+            -- A1 Phase 4: 공시 영향 저장. 자정 monitor가 매일 채우고,
+            -- 일일 리포트(15:43)가 오늘자 행을 읽어 화면에 표시한다.
+            -- impact_json은 DisclosureImpact 전체 직렬화 (Phase 3 formatter
+            -- 호환). before_total/after_total은 빠른 정렬·필터용 정수 캡처.
+            CREATE TABLE IF NOT EXISTS disclosure_impacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                analysis_date TEXT NOT NULL,
+                stock_code TEXT NOT NULL,
+                rcept_no TEXT NOT NULL,
+                report_nm TEXT DEFAULT '',
+                rcept_dt TEXT DEFAULT '',
+                before_total INTEGER DEFAULT 0,
+                after_total INTEGER DEFAULT 0,
+                before_signal TEXT DEFAULT '',
+                after_signal TEXT DEFAULT '',
+                impact_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_disclosure_impacts_date
+                ON disclosure_impacts(analysis_date);
+            CREATE INDEX IF NOT EXISTS idx_disclosure_impacts_stock
+                ON disclosure_impacts(stock_code);
+
             -- 업종 평균: 월요일 전종목 스캔에서 동적 계산되어 저장된다.
             -- scorer.py가 _calc_fair_value/_score_sector_per 호출 시
             -- settings.py 고정값보다 우선 조회한다.
@@ -1668,11 +1691,199 @@ class Database:
             logger.info("오래된 데이터 %d건 정리 완료", total)
         return total
 
+    # ================================================================
+    # A1 Phase 4: 공시 영향 저장/조회
+    # ================================================================
+    def save_disclosure_impact(
+        self, analysis_date: str, impact: Any,
+    ) -> int:
+        """단일 DisclosureImpact 저장. lastrowid 반환."""
+        return self.save_disclosure_impacts_batch(analysis_date, [impact])
+
+    def save_disclosure_impacts_batch(
+        self, analysis_date: str, impacts: list,
+    ) -> int:
+        """다수 impact를 한 트랜잭션으로 저장. 저장된 건수 반환.
+
+        같은 (analysis_date, stock_code, rcept_no) 조합은 중복 저장 가능
+        (UNIQUE 제약 없음) — 호출자가 멱등성을 원하면 본 함수 호출 전에
+        해당 날짜 행을 미리 비우거나 dedupe하라.
+        """
+        if not impacts:
+            return 0
+        conn = self._get_conn()
+        count = 0
+        for imp in impacts:
+            try:
+                conn.execute(
+                    """INSERT INTO disclosure_impacts
+                       (analysis_date, stock_code, rcept_no,
+                        report_nm, rcept_dt,
+                        before_total, after_total,
+                        before_signal, after_signal,
+                        impact_json)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        analysis_date,
+                        imp.stock_code,
+                        getattr(imp.disclosure, "rcept_no", "") or "",
+                        getattr(imp.disclosure, "report_nm", "") or "",
+                        getattr(imp.disclosure, "rcept_dt", "") or "",
+                        int(imp.before.total_score) if imp.before else 0,
+                        int(imp.after.total_score) if imp.after else 0,
+                        (imp.before.signal if imp.before else "") or "",
+                        (imp.after.signal if imp.after else "") or "",
+                        json.dumps(
+                            _disclosure_impact_to_dict(imp),
+                            ensure_ascii=False,
+                            default=str,
+                        ),
+                    ),
+                )
+                count += 1
+            except sqlite3.Error as e:
+                logger.warning(
+                    "disclosure_impacts 저장 실패 %s: %s",
+                    imp.stock_code, e,
+                )
+        conn.commit()
+        return count
+
+    def get_disclosure_impacts(self, analysis_date: str) -> list:
+        """특정 날짜의 impact 리스트 (DisclosureImpact 객체로 역직렬화)."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT impact_json FROM disclosure_impacts "
+            "WHERE analysis_date = ? "
+            "ORDER BY id ASC",
+            (analysis_date,),
+        ).fetchall()
+        return [
+            _disclosure_impact_from_json(r["impact_json"])
+            for r in rows
+            if r["impact_json"]
+        ]
+
+    def get_disclosure_impacts_for_stock(
+        self, stock_code: str, limit: int = 30,
+    ) -> list:
+        """특정 종목 최근 N건. 분석/조사용."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT impact_json FROM disclosure_impacts "
+            "WHERE stock_code = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (stock_code, limit),
+        ).fetchall()
+        return [
+            _disclosure_impact_from_json(r["impact_json"])
+            for r in rows
+            if r["impact_json"]
+        ]
+
     def close(self) -> None:
         """DB 연결을 닫는다."""
         if self._conn:
             self._conn.close()
             self._conn = None
+
+
+# ----------------------------------------------------------------------
+# A1 Phase 4: DisclosureImpact ↔ JSON 직렬화 헬퍼
+# ----------------------------------------------------------------------
+# import는 함수 본문 안에서 늦게 — circular import 방지
+# (analysis.disclosure_impact → ScoringEngine → ...)
+def _disclosure_impact_to_dict(imp: Any) -> dict[str, Any]:
+    def _snap(s: Any) -> Optional[dict[str, Any]]:
+        if s is None:
+            return None
+        return {
+            "stock_code": s.stock_code,
+            "stock_name": s.stock_name,
+            "total_score": s.total_score,
+            "value_score": s.value_score,
+            "financial_score": s.financial_score,
+            "growth_score": s.growth_score,
+            "momentum_score": s.momentum_score,
+            "quality_score": s.quality_score,
+            "signal": s.signal,
+        }
+
+    return {
+        "disclosure": {
+            "rcept_no": imp.disclosure.rcept_no,
+            "corp_code": imp.disclosure.corp_code,
+            "stock_code": imp.disclosure.stock_code,
+            "corp_name": imp.disclosure.corp_name,
+            "report_nm": imp.disclosure.report_nm,
+            "rcept_dt": imp.disclosure.rcept_dt,
+            "rm": imp.disclosure.rm,
+        },
+        "stock_code": imp.stock_code,
+        "before": _snap(imp.before),
+        "after": _snap(imp.after),
+        "total_diff": imp.total_diff,
+        "value_diff": imp.value_diff,
+        "financial_diff": imp.financial_diff,
+        "growth_diff": imp.growth_diff,
+        "momentum_diff": imp.momentum_diff,
+        "quality_diff": imp.quality_diff,
+        "signal_changed": imp.signal_changed,
+        "metric_changes": imp.metric_changes or {},
+    }
+
+
+def _disclosure_impact_from_json(s: str) -> Any:
+    """JSON 문자열 → DisclosureImpact 객체.
+
+    실패 시 None을 반환하지 않고 raise — 호출자가 명시적으로 catch하라.
+    """
+    from analysis.disclosure_impact import (
+        DisclosureImpact,
+        ScoreSnapshot,
+    )
+    from collectors.dart_disclosure import Disclosure
+
+    data = json.loads(s)
+
+    def _snap(d: Optional[dict[str, Any]]) -> Optional[ScoreSnapshot]:
+        if d is None:
+            return None
+        return ScoreSnapshot(
+            stock_code=str(d.get("stock_code") or ""),
+            stock_name=str(d.get("stock_name") or ""),
+            total_score=int(d.get("total_score") or 0),
+            value_score=int(d.get("value_score") or 0),
+            financial_score=int(d.get("financial_score") or 0),
+            growth_score=int(d.get("growth_score") or 0),
+            momentum_score=int(d.get("momentum_score") or 0),
+            quality_score=int(d.get("quality_score") or 0),
+            signal=str(d.get("signal") or ""),
+        )
+
+    dd = data.get("disclosure", {})
+    return DisclosureImpact(
+        disclosure=Disclosure(
+            rcept_no=str(dd.get("rcept_no") or ""),
+            corp_code=str(dd.get("corp_code") or ""),
+            stock_code=str(dd.get("stock_code") or ""),
+            corp_name=str(dd.get("corp_name") or ""),
+            report_nm=str(dd.get("report_nm") or ""),
+            rcept_dt=str(dd.get("rcept_dt") or ""),
+            rm=str(dd.get("rm") or ""),
+        ),
+        stock_code=str(data.get("stock_code") or ""),
+        before=_snap(data.get("before")),
+        after=_snap(data.get("after")),
+        total_diff=int(data.get("total_diff") or 0),
+        value_diff=int(data.get("value_diff") or 0),
+        financial_diff=int(data.get("financial_diff") or 0),
+        growth_diff=int(data.get("growth_diff") or 0),
+        momentum_diff=int(data.get("momentum_diff") or 0),
+        quality_diff=int(data.get("quality_diff") or 0),
+        signal_changed=bool(data.get("signal_changed") or False),
+        metric_changes=data.get("metric_changes") or {},
+    )
 
 
 # ================================================================
