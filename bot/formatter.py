@@ -50,6 +50,7 @@ class MessageFormatter:
         foreign_net_buy: int = 0,
         prev_top_10: Optional[list[dict[str, Any]]] = None,
         scored_list: Optional[list[dict[str, Any]]] = None,
+        disclosure_impacts: Optional[list[Any]] = None,
     ) -> list[str]:
         """일일 분석 리포트를 생성한다.
 
@@ -134,6 +135,14 @@ class MessageFormatter:
                     lines.append(
                         f"   수급(5일): 외국인 {f5_str} | 기관 {i5_str}"
                     )
+                lines.append("")
+
+        # 공시 영향 변화 섹션 (A1 Phase 3, 자정 모니터 결과)
+        # disclosure_impacts가 주어지고 비어있지 않을 때만 추가.
+        if disclosure_impacts:
+            section = format_disclosure_section(disclosure_impacts)
+            if section:
+                lines.append(section)
                 lines.append("")
 
         # 경고 종목
@@ -889,6 +898,150 @@ class MessageFormatter:
             return f"{market_cap / 100_000_000:,.0f}억원"
         else:
             return f"{market_cap:,}원"
+
+
+# ================================================================
+# A1 Phase 3: 공시 영향 변화 섹션
+# ================================================================
+# import는 모듈 상단 의존을 가벼이 유지하기 위해 함수 내부로 미룬다.
+# 단위 테스트는 helper를 직접 호출하므로 dataclass 결합만 발생.
+
+_SIGNAL_KOREAN = {
+    "strong_buy": "🟢 강매수",
+    "buy": "🟡 매수",
+    "hold": "⭐ 보유",
+    "sell": "🔴 매도",
+}
+
+# 길이 폭주 방지 한도 — 카테고리당 최대 표시 항목 수.
+_DISCLOSURE_MAX_ITEMS_PER_GROUP = 5
+
+
+def _signal_korean(signal: str) -> str:
+    return _SIGNAL_KOREAN.get((signal or "").lower(), signal or "—")
+
+
+def _format_impact_significant(impact: Any) -> str:
+    """5점 이상 변동 또는 신호 변경된 종목의 상세 표시."""
+    diff = int(impact.total_diff)
+    diff_sign = "+" if diff > 0 else ""
+    icon = "🚀" if diff > 0 else ("⚠️" if diff < 0 else "📋")
+    name = (impact.disclosure.corp_name or "").strip()
+    code = impact.stock_code
+
+    out = [
+        f"{icon} {name} ({code})",
+        f"   공시: {impact.disclosure.report_nm}",
+    ]
+    before = impact.before.total_score if impact.before else 0
+    after = impact.after.total_score if impact.after else 0
+    out.append(f"   점수: {before} → {after} ({diff_sign}{diff})")
+
+    if impact.signal_changed and impact.before and impact.after:
+        out.append(
+            f"   신호: {_signal_korean(impact.before.signal)} → "
+            f"{_signal_korean(impact.after.signal)}"
+        )
+
+    # 카테고리별 |3+| 변화만 표시 (작은 변동은 노이즈)
+    parts: list[str] = []
+    if abs(impact.value_diff) >= 3:
+        parts.append(f"가치 {impact.value_diff:+d}")
+    if abs(impact.financial_diff) >= 3:
+        parts.append(f"재무 {impact.financial_diff:+d}")
+    if abs(impact.growth_diff) >= 3:
+        parts.append(f"성장 {impact.growth_diff:+d}")
+    if abs(impact.quality_diff) >= 3:
+        parts.append(f"퀄리티 {impact.quality_diff:+d}")
+    if parts:
+        out.append("   변화: " + ", ".join(parts))
+    return "\n".join(out)
+
+
+def _group_info_disclosures(impacts: list[Any]) -> dict[str, list[Any]]:
+    """정보성 공시(점수 영향 0)를 BUYBACK/DIVIDEND/MA/기타로 그룹화."""
+    from collectors.dart_disclosure import DisclosureType, classify_disclosure
+
+    groups: dict[str, list[Any]] = {
+        "자사주": [], "배당": [], "M&A": [], "기타": [],
+    }
+    for imp in impacts:
+        dtype = classify_disclosure(imp.disclosure)
+        if dtype == DisclosureType.BUYBACK:
+            groups["자사주"].append(imp)
+        elif dtype == DisclosureType.DIVIDEND:
+            groups["배당"].append(imp)
+        elif dtype == DisclosureType.MA:
+            groups["M&A"].append(imp)
+        else:
+            groups["기타"].append(imp)
+    return {k: v for k, v in groups.items() if v}
+
+
+def format_disclosure_section(impacts: list[Any]) -> str:
+    """공시 영향 변화 섹션 본문 (헤더 포함). 빈 리스트면 빈 문자열.
+
+    표시 정책:
+      - 헤더 1줄
+      - significant (|총점|≥5 또는 signal 변경): 상세 다중 줄
+      - minor (점수 변화 있으나 not significant): 최대 5건 한 줄씩
+      - info-only (점수 변화 0): 자사주/배당/M&A/기타 그룹 + 그룹당 최대 5건
+
+    호출자는 일일 리포트 lines에 추가하기만 하면 _split_messages가
+    4096자 분할을 처리한다.
+    """
+    if not impacts:
+        return ""
+
+    significant = [i for i in impacts if i.is_significant]
+    minor = [i for i in impacts
+             if (not i.is_significant) and i.total_diff != 0]
+    info_only = [i for i in impacts
+                 if (not i.is_significant) and i.total_diff == 0]
+
+    out: list[str] = ["📋 공시 영향 변화 (어제)"]
+    out.append("")
+
+    if significant:
+        # is_significant 종목들 — process_disclosures가 이미 정렬했지만
+        # 여기서도 재안전하게 |total_diff| 큰 순으로.
+        for imp in sorted(significant,
+                          key=lambda i: (-int(bool(i.signal_changed)),
+                                          -abs(i.total_diff))):
+            out.append(_format_impact_significant(imp))
+            out.append("")
+
+    if minor:
+        out.append(f"📊 작은 변화 ({len(minor)}건)")
+        for imp in minor[:_DISCLOSURE_MAX_ITEMS_PER_GROUP]:
+            d = int(imp.total_diff)
+            sign = "+" if d > 0 else ""
+            before = imp.before.total_score if imp.before else 0
+            after = imp.after.total_score if imp.after else 0
+            name = (imp.disclosure.corp_name or "").strip()
+            out.append(
+                f"   - {imp.stock_code} {name}: "
+                f"{before} → {after} ({sign}{d})"
+            )
+        if len(minor) > _DISCLOSURE_MAX_ITEMS_PER_GROUP:
+            out.append(
+                f"   ... 외 {len(minor) - _DISCLOSURE_MAX_ITEMS_PER_GROUP}건"
+            )
+        out.append("")
+
+    if info_only:
+        for category, items in _group_info_disclosures(info_only).items():
+            out.append(f"📌 {category} ({len(items)}건)")
+            for imp in items[:_DISCLOSURE_MAX_ITEMS_PER_GROUP]:
+                name = (imp.disclosure.corp_name or "").strip()
+                out.append(f"   - {name} ({imp.stock_code})")
+            if len(items) > _DISCLOSURE_MAX_ITEMS_PER_GROUP:
+                out.append(
+                    f"   ... 외 {len(items) - _DISCLOSURE_MAX_ITEMS_PER_GROUP}건"
+                )
+            out.append("")
+
+    return "\n".join(out).rstrip()
 
 
 # ================================================================
