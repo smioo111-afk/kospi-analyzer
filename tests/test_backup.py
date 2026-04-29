@@ -18,6 +18,7 @@ from tools.backup_db import (  # noqa: E402
     AUTO_BACKUP_PATTERN,
     _purge_old_auto_backups,
     auto_backup_db,
+    cli_main,
 )
 
 
@@ -163,6 +164,91 @@ def test_backup_overwrites_same_day(tmp_path):
 def test_backup_raises_when_source_missing(tmp_path):
     with pytest.raises(FileNotFoundError):
         auto_backup_db(retain_days=30, db_path=str(tmp_path / "nope.db"))
+
+
+# ----------------------------------------------------------------------
+# F1: argparse + dry-run
+# ----------------------------------------------------------------------
+def test_dry_run_does_not_create_backup_file(tmp_path):
+    src = tmp_path / "src.db"
+    _make_db(src)
+    backup_dir = tmp_path / "auto_backup"
+    out = auto_backup_db(
+        retain_days=30, db_path=str(src), dry_run=True,
+    )
+    # dry-run은 path를 반환하지만 실제 파일은 생성 안 됨
+    assert not out.exists()
+    # 디렉토리도 강제 생성되지 않음 (없는 채로 남음)
+    # backup_dir 자체는 _resolve_backup_dir로 src.parent/auto_backup 결정.
+    assert not backup_dir.exists()
+
+
+def test_dry_run_preserves_existing_old_backups(tmp_path):
+    src = tmp_path / "src.db"
+    _make_db(src)
+    backup_dir = tmp_path / "auto_backup"
+    backup_dir.mkdir()
+    old = (datetime(2026, 4, 28) - timedelta(days=40)).strftime("%Y%m%d")
+    old_file = backup_dir / f"{old}_kospi_analyzer.db"
+    old_file.write_bytes(b"old")
+
+    auto_backup_db(
+        retain_days=30, db_path=str(src),
+        now=datetime(2026, 4, 28), dry_run=True,
+    )
+    # dry-run은 삭제하지 않음
+    assert old_file.exists()
+
+
+def test_cli_main_dry_run_returns_0(tmp_path):
+    src = tmp_path / "src.db"
+    _make_db(src)
+    rc = cli_main([
+        "--dry-run",
+        "--db-path", str(src),
+        "--retain-days", "30",
+    ])
+    assert rc == 0
+
+
+def test_cli_main_missing_source_returns_2(tmp_path):
+    rc = cli_main([
+        "--db-path", str(tmp_path / "nope.db"),
+    ])
+    assert rc == 2
+
+
+def test_cli_main_custom_backup_dir(tmp_path):
+    src = tmp_path / "src.db"
+    _make_db(src)
+    custom = tmp_path / "custom_dir"
+    rc = cli_main([
+        "--db-path", str(src),
+        "--backup-dir", str(custom),
+        "--retain-days", "30",
+    ])
+    assert rc == 0
+    assert custom.exists()
+    files = list(custom.glob("*_kospi_analyzer.db"))
+    assert len(files) == 1
+
+
+def test_cli_main_retain_days_zero_skips_purge(tmp_path):
+    """retain-days=0 이면 정리 안 함 — 기존 자동 백업 보존."""
+    src = tmp_path / "src.db"
+    _make_db(src)
+    backup_dir = tmp_path / "auto_backup"
+    backup_dir.mkdir()
+    very_old = (datetime.now() - timedelta(days=365)).strftime("%Y%m%d")
+    f = backup_dir / f"{very_old}_kospi_analyzer.db"
+    f.write_bytes(b"x")
+
+    rc = cli_main([
+        "--db-path", str(src),
+        "--retain-days", "0",
+    ])
+    assert rc == 0
+    assert f.exists()
 
 
 if __name__ == "__main__":

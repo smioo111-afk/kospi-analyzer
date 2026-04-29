@@ -12,9 +12,11 @@ data/auto_backup/YYYYMMDD_kospi_analyzer.db로 복사한다.
 
 from __future__ import annotations
 
+import argparse
 import logging
 import re
 import sqlite3
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -44,6 +46,8 @@ def auto_backup_db(
     retain_days: int = 30,
     db_path: Optional[str] = None,
     now: Optional[datetime] = None,
+    backup_dir: Optional[Path] = None,
+    dry_run: bool = False,
 ) -> Path:
     """자동 백업을 수행한다.
 
@@ -51,19 +55,40 @@ def auto_backup_db(
         retain_days: 이 일수 이전의 자동 백업은 삭제. 기본 30일.
         db_path: 소스 DB 경로 (기본: DBConfig.DB_PATH).
         now: 현재 시각 주입 (테스트용).
+        backup_dir: 백업 디렉토리 명시. None이면 db_path.parent/auto_backup.
+        dry_run: True면 실제 파일 생성/삭제 없이 계획만 로깅하고 예정 경로 반환.
 
     Returns:
-        Path: 생성된 백업 파일 경로.
+        Path: 생성된(또는 예정된) 백업 파일 경로.
     """
     src = _resolve_db_path(db_path)
     if not src.exists():
         raise FileNotFoundError(f"백업 대상 DB가 없음: {src}")
 
-    backup_dir = _resolve_backup_dir(src)
-    backup_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = (
+        Path(backup_dir) if backup_dir is not None else _resolve_backup_dir(src)
+    )
+    if not dry_run:
+        target_dir.mkdir(parents=True, exist_ok=True)
 
     ts = (now or datetime.now()).strftime("%Y%m%d")
-    dest = backup_dir / f"{ts}_kospi_analyzer.db"
+    dest = target_dir / f"{ts}_kospi_analyzer.db"
+
+    if dry_run:
+        size_mb = src.stat().st_size / (1024 * 1024)
+        logger.info(
+            "[dry-run] 백업 예정: %s → %s (소스 %.2f MB)",
+            src, dest, size_mb,
+        )
+        # retain 정리도 dry-run으로 미리보기.
+        n = _count_old_auto_backups(
+            target_dir, retain_days, now=(now or datetime.now()),
+        )
+        logger.info(
+            "[dry-run] 정리 예정: %d건 (retain_days=%d, dir=%s)",
+            n, retain_days, target_dir,
+        )
+        return dest
 
     # 1) TRUNCATE 체크포인트로 -wal 비움 (백업 일관성 확보).
     #    실패해도 복구 가능: backup API가 dirty page도 함께 복사한다.
@@ -88,12 +113,35 @@ def auto_backup_db(
 
     # 3) retain_days 초과 자동 백업 정리. 패턴 매칭으로 수동 백업은 건드리지 않음.
     removed = _purge_old_auto_backups(
-        backup_dir, retain_days, now=(now or datetime.now())
+        target_dir, retain_days, now=(now or datetime.now())
     )
     if removed:
         logger.info("자동 백업 정리: %d건 삭제 (retain_days=%d)", removed, retain_days)
 
     return dest
+
+
+def _count_old_auto_backups(
+    backup_dir: Path, retain_days: int, now: datetime
+) -> int:
+    """삭제 대상 자동 백업 개수만 세어 반환 (dry-run 미리보기용)."""
+    if retain_days <= 0 or not backup_dir.exists():
+        return 0
+    cutoff = (now - timedelta(days=retain_days)).date()
+    count = 0
+    for entry in backup_dir.iterdir():
+        if not entry.is_file():
+            continue
+        m = AUTO_BACKUP_PATTERN.match(entry.name)
+        if not m:
+            continue
+        try:
+            file_date = datetime.strptime(m.group(1), "%Y%m%d").date()
+        except ValueError:
+            continue
+        if file_date < cutoff:
+            count += 1
+    return count
 
 
 def _purge_old_auto_backups(
@@ -144,6 +192,58 @@ def scheduled_auto_backup() -> None:
         logger.error("scheduled_auto_backup 실패: %s", e, exc_info=True)
 
 
-if __name__ == "__main__":
+def _build_arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="backup_db",
+        description=(
+            "KOSPI Analyzer DB 자동 백업 도구. "
+            "data/kospi_analyzer.db를 data/auto_backup/YYYYMMDD_*.db로 복사."
+        ),
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="실제 파일 생성/삭제 없이 계획만 로깅",
+    )
+    p.add_argument(
+        "--retain-days",
+        type=int,
+        default=30,
+        help="N일보다 오래된 자동 백업은 삭제 (기본 30, 0=정리 안함)",
+    )
+    p.add_argument(
+        "--backup-dir",
+        type=str,
+        default=None,
+        help="백업 디렉토리 (기본: 소스 DB 위치 옆 auto_backup/)",
+    )
+    p.add_argument(
+        "--db-path",
+        type=str,
+        default=None,
+        help="소스 DB 경로 (기본: DBConfig.DB_PATH)",
+    )
+    return p
+
+
+def cli_main(argv: Optional[list[str]] = None) -> int:
+    args = _build_arg_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO)
-    auto_backup_db()
+    try:
+        auto_backup_db(
+            retain_days=args.retain_days,
+            db_path=args.db_path,
+            backup_dir=Path(args.backup_dir) if args.backup_dir else None,
+            dry_run=args.dry_run,
+        )
+        return 0
+    except FileNotFoundError as e:
+        logger.error("%s", e)
+        return 2
+    except Exception as e:
+        logger.error("백업 실패: %s", e, exc_info=True)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(cli_main())
