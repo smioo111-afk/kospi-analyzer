@@ -808,10 +808,15 @@ async def daily_disclosure_monitor() -> None:
 
         scorer = ScoringEngine()
         scorer.set_db(db)
+        # H1: financial_metrics는 직전 사업연도(year-1) 기준으로 저장된다.
+        # extract_financial_metrics(year=N)은 N년 사업보고서를 가져오므로,
+        # 어제 공시일 기준 year-1을 전달해야 한다 (예: 2026-04-29 공시
+        # → 2025년 사업보고서).
+        target_year = yesterday.year - 1
         try:
             impacts = process_disclosures(
                 db=db, dart_client=dart, scorer=scorer,
-                disclosures=disclosures, year=yesterday.year,
+                disclosures=disclosures, year=target_year,
                 cache_dir="data/dart_cache", save_to_db=True,
             )
         except Exception as e:

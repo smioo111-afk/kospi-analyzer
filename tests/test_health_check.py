@@ -80,6 +80,13 @@ def _build_db(tmp_path: Path) -> Path:
             return_1w REAL DEFAULT 0,
             last_updated TEXT DEFAULT ''
         );
+        CREATE TABLE disclosure_impacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            analysis_date TEXT NOT NULL,
+            stock_code TEXT NOT NULL,
+            rcept_no TEXT,
+            impact_json TEXT
+        );
         """
     )
     conn.commit()
@@ -156,6 +163,14 @@ def _seed_healthy(path: Path, date: str = "2026-04-28") -> None:
         "return_1w, last_updated) VALUES (?,?,?,?)",
         perf_rows,
     )
+    # T1-9: disclosure_monitor 실행 흔적 (오늘자 1건). 0건이어도 PASS
+    # 하려면 로그가 있어야 하므로 seed 단계에서는 행 1건으로 단순화.
+    conn.execute(
+        "INSERT INTO disclosure_impacts "
+        "(analysis_date, stock_code, rcept_no, impact_json) "
+        "VALUES (?, ?, ?, ?)",
+        (date, "000001", "20260427001234", "{}"),
+    )
     conn.commit()
     conn.close()
 
@@ -170,8 +185,8 @@ def test_run_health_check_returns_report(tmp_path):
     assert isinstance(rep, HealthCheckReport)
     assert rep.date == "2026-04-28"
     assert rep.overall == "pass"
-    # 11개 + T1-4 분리 + T1-2b = 총 13개 (T1-4a, T1-4b, T1-2b)
-    assert len(rep.checks) == 13
+    # 11개 + T1-4 분리 + T1-2b + T1-9 = 총 14개
+    assert len(rep.checks) == 14
 
 
 def test_health_check_pass_on_healthy_data(tmp_path):
@@ -423,7 +438,8 @@ def test_format_text_contains_all_checks(tmp_path):
     rep = run_health_check("2026-04-28", db_path=str(db))
     text = rep.format_text()
     for name in ("T1-1", "T1-2", "T1-2b", "T1-3", "T1-4a", "T1-4b",
-                 "T1-5", "T1-6", "T1-7", "T1-8", "T2-1", "T2-2", "T2-3"):
+                 "T1-5", "T1-6", "T1-7", "T1-8", "T1-9",
+                 "T2-1", "T2-2", "T2-3"):
         assert name in text
 
 
@@ -556,6 +572,43 @@ def test_t21_includes_penalty_profit_to_loss(tmp_path):
     rep = run_health_check("2026-04-28", db_path=str(db))
     t21 = next(c for c in rep.checks if c.name == "T2-1")
     assert t21.status == "pass", f"detail: {t21.detail}"
+
+
+# ----------------------------------------------------------------------
+# T1-9 disclosure_monitor 실행 검증
+# ----------------------------------------------------------------------
+def test_t1_9_passes_when_monitor_ran(tmp_path):
+    """오늘자 disclosure_impacts 행이 있으면 PASS."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    t19 = next(c for c in rep.checks if c.name == "T1-9")
+    assert t19.status == "pass"
+
+
+def test_t1_9_warning_when_today_empty_but_recent_history(tmp_path):
+    """오늘자 0건 + 로그 없음이지만 최근 7일 중 다른 날 행 있음 → warning."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    # _seed_healthy가 today=2026-04-28에 1건 넣음 → 다른 날 검사일로 호출
+    # 검사일 2026-04-30에는 행 없음, 2026-04-28에 1건이 7일 윈도 안.
+    rep = run_health_check("2026-04-30", db_path=str(db))
+    t19 = next(c for c in rep.checks if c.name == "T1-9")
+    assert t19.status == "warning"
+
+
+def test_t1_9_fail_when_7_days_empty(tmp_path):
+    """7일 연속 0건 + 로그 없음 → fail (영구 결함)."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    # 모든 disclosure_impacts 행 제거
+    conn = sqlite3.connect(db)
+    conn.execute("DELETE FROM disclosure_impacts")
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    t19 = next(c for c in rep.checks if c.name == "T1-9")
+    assert t19.status == "fail"
 
 
 # ----------------------------------------------------------------------

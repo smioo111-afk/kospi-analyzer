@@ -97,6 +97,52 @@ async def test_monitor_no_disclosures_skips_processing(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_monitor_year_uses_yesterday_minus_one(tmp_path, monkeypatch):
+    """H1: process_disclosures에 전달되는 year는 어제.year - 1.
+
+    financial_metrics는 직전 사업연도 기준으로 저장되므로, 모니터가
+    yesterday.year를 그대로 넘기면 미래 연도의 보고서를 요구하게 된다.
+    """
+    monkeypatch.setattr(
+        "config.settings.DBConfig.DB_PATH", str(tmp_path / "year.db"),
+    )
+    import importlib
+    import database.models as models_mod
+    importlib.reload(models_mod)
+    seed = models_mod.Database(db_path=str(tmp_path / "year.db"))
+    seed.save_financial_metrics({
+        "stock_code": "004800", "year": 2025, "quarter": "annual",
+    })
+    seed.close()
+    import main as main_mod
+    importlib.reload(main_mod)
+
+    from datetime import date
+    yesterday = date.today() - __import__("datetime").timedelta(days=1)
+    expected_year = yesterday.year - 1
+
+    captured = {}
+
+    def capture_year(**kwargs):
+        captured["year"] = kwargs.get("year")
+        return []
+
+    with patch("collectors.dart_disclosure.fetch_disclosures",
+               return_value=[_disc("004800", "[기재정정]사업보고서")]), \
+         patch("analysis.disclosure_impact.process_disclosures",
+               side_effect=capture_year), \
+         patch("collectors.dart_api.DARTClient"), \
+         patch("analysis.scorer.ScoringEngine"), \
+         patch.object(main_mod, "KOSPIBot"):
+        await main_mod.daily_disclosure_monitor()
+
+    assert captured["year"] == expected_year, (
+        f"year 인자가 {captured['year']}, 기대 {expected_year} "
+        f"(yesterday.year - 1)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_monitor_processes_and_saves(tmp_path, monkeypatch):
     """공시 발견 시 process_disclosures + save_disclosure_impacts_batch 호출."""
     db_path = tmp_path / "m2.db"

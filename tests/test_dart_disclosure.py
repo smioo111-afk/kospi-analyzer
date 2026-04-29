@@ -85,11 +85,16 @@ def test_classify_periodic_business_report():
     assert classify_disclosure(_disc(report_nm="사업보고서")) == DisclosureType.PERIODIC
 
 
-def test_classify_periodic_quarterly():
+def test_classify_quarterly_separate_from_periodic():
+    """M1: 분기보고서는 PERIODIC이 아닌 QUARTERLY로 분류."""
     assert (classify_disclosure(_disc(report_nm="분기보고서(1Q26)"))
-            == DisclosureType.PERIODIC)
+            == DisclosureType.QUARTERLY)
+
+
+def test_classify_halfly_separate_from_periodic():
+    """M1: 반기보고서는 HALFLY로 분류."""
     assert (classify_disclosure(_disc(report_nm="반기보고서"))
-            == DisclosureType.PERIODIC)
+            == DisclosureType.HALFLY)
 
 
 def test_classify_amendment_overrides_others():
@@ -143,9 +148,19 @@ def test_classify_other_returns_other():
 # ----------------------------------------------------------------------
 # needs_data_refresh
 # ----------------------------------------------------------------------
-def test_needs_refresh_for_periodic():
+def test_needs_refresh_for_periodic_annual_only():
+    """M1: 연간 사업보고서만 재수집 트리거. 분기/반기는 별도 처리."""
     assert needs_data_refresh(_disc(report_nm="사업보고서"))
-    assert needs_data_refresh(_disc(report_nm="분기보고서"))
+
+
+def test_quarterly_does_not_trigger_refresh():
+    """M1: financial_metrics가 annual-only라 분기보고서는 재수집 안 함."""
+    assert not needs_data_refresh(_disc(report_nm="분기보고서(1Q26)"))
+
+
+def test_halfly_does_not_trigger_refresh():
+    """M1: 반기보고서도 annual-only 정책상 재수집 안 함."""
+    assert not needs_data_refresh(_disc(report_nm="반기보고서"))
 
 
 def test_needs_refresh_for_amendment():
@@ -294,11 +309,30 @@ def test_full_workflow_classify_and_filter_periodic_only():
     refresh_needed = [d for d in disclosures if needs_data_refresh(d)]
     types = {d.stock_code: classify_disclosure(d) for d in disclosures}
 
-    assert types["004800"] == DisclosureType.PERIODIC
+    # M1: 분기보고서는 QUARTERLY, 재수집 안 함
+    assert types["004800"] == DisclosureType.QUARTERLY
     assert types["005930"] == DisclosureType.DIVIDEND
     assert types["000270"] == DisclosureType.AMENDMENT
-    # 효성(분기) + 기아(정정) 두 건만 재수집 필요
-    assert {d.stock_code for d in refresh_needed} == {"004800", "000270"}
+    # 기아(정정)만 재수집 필요. 효성(분기)은 annual-only 정책으로 제외.
+    assert {d.stock_code for d in refresh_needed} == {"000270"}
+
+
+# ----------------------------------------------------------------------
+# M1: QUARTERLY/HALFLY enum + 회귀
+# ----------------------------------------------------------------------
+def test_disclosure_type_includes_quarterly_and_halfly():
+    """M1: 신규 enum 값 회귀."""
+    assert DisclosureType.QUARTERLY.value == "quarterly"
+    assert DisclosureType.HALFLY.value == "halfly"
+
+
+def test_periodic_only_matches_annual_business_report():
+    """PERIODIC은 사업보고서(연간)만. 분기/반기 키워드와 명확 분리."""
+    assert (classify_disclosure(_disc(report_nm="사업보고서"))
+            == DisclosureType.PERIODIC)
+    # 사업보고서가 부분문자열인 다른 보고서명은 없으나, 가드용.
+    assert (classify_disclosure(_disc(report_nm="[기재정정]사업보고서"))
+            == DisclosureType.AMENDMENT)
 
 
 if __name__ == "__main__":

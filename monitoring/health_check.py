@@ -451,6 +451,74 @@ def _check_cascade_recent(conn: sqlite3.Connection) -> HealthCheck:
     )
 
 
+def _check_disclosure_monitor_ran(
+    conn: sqlite3.Connection, date: str
+) -> HealthCheck:
+    """T1-9: 자정 disclosure_monitor가 실제로 돌았는지.
+
+    매일 00:00 모니터는 disclosure_impacts 테이블에 오늘자 행을 채운다.
+    공시 0건인 날에도 1건도 없는 것은 정상이므로 "테이블 행 + 로그 둘 중
+    하나라도 있으면 PASS"로 판단한다. 둘 다 없으면 모니터가 아예 실행되지
+    않은 것이므로 warning.
+
+    7일 연속 0건이면 fail로 격상 (DART API 키 만료 등 영구 결함 의심).
+    """
+    today_rows = conn.execute(
+        "SELECT COUNT(*) AS c FROM disclosure_impacts "
+        "WHERE analysis_date = ?", (date,),
+    ).fetchone()["c"]
+    threshold = "오늘 행 ≥ 1 OR 모니터 로그 1건+"
+
+    # 로그에서 오늘 disclosure_monitor 시작/완료 흔적 확인.
+    # 로그 파일 부재/읽기 실패는 비결정 — skip 처리.
+    log_seen = False
+    log_path = Path(LogConfig.LOG_DIR) / "kospi_analyzer.log"
+    if log_path.exists():
+        try:
+            with log_path.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    m = _LOG_DATE_RE.match(line)
+                    if not m or m.group(1) != date:
+                        continue
+                    if "[disclosure_monitor:" in line:
+                        log_seen = True
+                        break
+        except Exception:
+            pass
+
+    if today_rows > 0 or log_seen:
+        return HealthCheck(
+            name="T1-9",
+            title="disclosure_monitor 실행",
+            status="pass",
+            detail=f"{today_rows}건 적재 / 로그={log_seen}",
+            threshold=threshold,
+        )
+
+    # 7일 연속 0건 + 로그 없음 → fail (영구 결함 의심)
+    cur = conn.execute(
+        "SELECT analysis_date, COUNT(*) AS c FROM disclosure_impacts "
+        "WHERE analysis_date >= date(?, '-6 days') AND analysis_date <= ? "
+        "GROUP BY analysis_date", (date, date),
+    ).fetchall()
+    days_with_rows = sum(1 for r in cur if (r["c"] or 0) > 0)
+    if days_with_rows == 0:
+        return HealthCheck(
+            name="T1-9",
+            title="disclosure_monitor 실행",
+            status="fail",
+            detail="7일 연속 미실행 (impacts 0건 + 로그 없음)",
+            threshold=threshold,
+        )
+    return HealthCheck(
+        name="T1-9",
+        title="disclosure_monitor 실행",
+        status="warning",
+        detail=f"{date} 미실행 (impacts 0, 로그 없음)",
+        threshold=threshold,
+    )
+
+
 def _check_score_sum_consistency(
     conn: sqlite3.Connection, date: str
 ) -> HealthCheck:
@@ -703,6 +771,7 @@ def run_health_check(
         report.add(_check_revenue_loss(conn, date))
         report.add(_check_perf_tracking(conn, date))
         report.add(_check_cascade_recent(conn))
+        report.add(_check_disclosure_monitor_ran(conn, date))
         report.add(_check_score_sum_consistency(conn, date))
         report.add(_check_signal_threshold(conn, date))
     finally:
