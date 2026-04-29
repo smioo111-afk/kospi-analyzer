@@ -277,10 +277,16 @@ class AnalysisPipeline:
             prev_top_10 = prev_result.get("top_10", []) if prev_result else []
 
             # 7. KOSPI 지수 + 외국인 순매수 합계 (analysis_results용)
+            kospi_change = 0.0
+            kospi_change_rate = 0.0
             try:
                 async with self.kis:
                     kospi_result = await self.kis.aget_kospi_index()
                 kospi_index = kospi_result.get("index", 0.0)
+                kospi_change = float(kospi_result.get("change", 0.0) or 0.0)
+                kospi_change_rate = float(
+                    kospi_result.get("change_rate", 0.0) or 0.0
+                )
             except Exception as e:
                 logger.warning("KOSPI 지수 수집 실패: %s", e)
                 kospi_index = 0.0
@@ -288,6 +294,13 @@ class AnalysisPipeline:
                 int(s.get("foreign_net_buy_20d", 0) or 0)
                 for s in all_signals
             )
+
+            # M-HC1: KOSPI 변동 정합성을 health_check에서 점검할 수 있도록
+            # stats_json에 change/change_rate 동봉. (analysis_results 컬럼은
+            # 그대로, 스키마 변경 없음.) N4 silent fail 회귀 차단용.
+            stats = dict(stats)
+            stats["kospi_change"] = kospi_change
+            stats["kospi_change_rate"] = kospi_change_rate
 
             # 8. DB 저장
             logger.info("[6/6] 결과 저장 + 텔레그램 발송...")

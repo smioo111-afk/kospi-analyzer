@@ -170,8 +170,8 @@ def test_run_health_check_returns_report(tmp_path):
     assert isinstance(rep, HealthCheckReport)
     assert rep.date == "2026-04-28"
     assert rep.overall == "pass"
-    # 11개 + T1-4 분리 = 총 12개 (T1-4a, T1-4b)
-    assert len(rep.checks) == 12
+    # 11개 + T1-4 분리 + T1-2b = 총 13개 (T1-4a, T1-4b, T1-2b)
+    assert len(rep.checks) == 13
 
 
 def test_health_check_pass_on_healthy_data(tmp_path):
@@ -220,6 +220,82 @@ def test_kospi_index_range_check_passes_in_range(tmp_path):
     rep = run_health_check("2026-04-28", db_path=str(db))
     t12 = next(c for c in rep.checks if c.name == "T1-2")
     assert t12.status == "pass"
+
+
+# ----------------------------------------------------------------------
+# T1-2b KOSPI change vs change_rate 정합
+# ----------------------------------------------------------------------
+def test_t1_2b_skipped_when_stats_missing(tmp_path):
+    """stats_json에 change 키가 없으면 skip."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    t12b = next(c for c in rep.checks if c.name == "T1-2b")
+    assert t12b.status == "skip"
+
+
+def test_t1_2b_passes_when_both_consistent(tmp_path):
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE analysis_results SET stats_json=? WHERE analysis_date=?",
+        ('{"kospi_change": 12.5, "kospi_change_rate": 0.45}', "2026-04-28"),
+    )
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    t12b = next(c for c in rep.checks if c.name == "T1-2b")
+    assert t12b.status == "pass"
+
+
+def test_t1_2b_passes_when_both_zero(tmp_path):
+    """장 마감 무변동 케이스 (둘 다 0)는 pass."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE analysis_results SET stats_json=? WHERE analysis_date=?",
+        ('{"kospi_change": 0.0, "kospi_change_rate": 0.0}', "2026-04-28"),
+    )
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    t12b = next(c for c in rep.checks if c.name == "T1-2b")
+    assert t12b.status == "pass"
+
+
+def test_t1_2b_detects_zero_rate_with_nonzero_change(tmp_path):
+    """N4 silent fail 패턴: change != 0 인데 rate == 0."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE analysis_results SET stats_json=? WHERE analysis_date=?",
+        ('{"kospi_change": 12.5, "kospi_change_rate": 0.0}', "2026-04-28"),
+    )
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    t12b = next(c for c in rep.checks if c.name == "T1-2b")
+    assert t12b.status == "fail"
+    assert "한쪽 0" in t12b.detail
+
+
+def test_t1_2b_detects_zero_change_with_nonzero_rate(tmp_path):
+    """반대 방향 silent fail (rate만 채워짐)도 fail."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE analysis_results SET stats_json=? WHERE analysis_date=?",
+        ('{"kospi_change": 0.0, "kospi_change_rate": 0.45}', "2026-04-28"),
+    )
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    t12b = next(c for c in rep.checks if c.name == "T1-2b")
+    assert t12b.status == "fail"
 
 
 # ----------------------------------------------------------------------
@@ -346,8 +422,8 @@ def test_format_text_contains_all_checks(tmp_path):
     _seed_healthy(db)
     rep = run_health_check("2026-04-28", db_path=str(db))
     text = rep.format_text()
-    for name in ("T1-1", "T1-2", "T1-3", "T1-4a", "T1-4b", "T1-5",
-                 "T1-6", "T1-7", "T1-8", "T2-1", "T2-2", "T2-3"):
+    for name in ("T1-1", "T1-2", "T1-2b", "T1-3", "T1-4a", "T1-4b",
+                 "T1-5", "T1-6", "T1-7", "T1-8", "T2-1", "T2-2", "T2-3"):
         assert name in text
 
 

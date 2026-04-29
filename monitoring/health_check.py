@@ -32,6 +32,7 @@ T1-4b / T2-1 의미 보정 (2026-04-29):
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sqlite3
@@ -183,6 +184,60 @@ def _check_kospi_index(conn: sqlite3.Connection, date: str) -> HealthCheck:
         status="pass",
         detail=f"{idx:.2f}",
         threshold=threshold,
+    )
+
+
+def _check_kospi_change_consistency(
+    conn: sqlite3.Connection, date: str
+) -> HealthCheck:
+    """T1-2b: KOSPI change vs change_rate silent-fail 차단.
+
+    N4 회귀: KIS 응답 키 오인식 시 change_rate=0.0으로 떨어지지만 change나
+    index가 정상이라 상위 로직이 통과한다. main.py가 stats_json에 동봉한
+    kospi_change / kospi_change_rate를 비교해 'change != 0 인데 change_rate
+    == 0' 또는 'change_rate != 0 인데 change == 0' 조합을 검출한다.
+    stats_json에 키가 없으면(이전 사이클 데이터) skip.
+    """
+    row = conn.execute(
+        "SELECT stats_json FROM analysis_results "
+        "WHERE analysis_date=? ORDER BY id DESC LIMIT 1",
+        (date,),
+    ).fetchone()
+    if row is None:
+        return HealthCheck(
+            name="T1-2b",
+            title="KOSPI change/rate 정합",
+            status="skip",
+            detail="해당일 분석 결과 없음",
+        )
+    try:
+        stats = json.loads(row["stats_json"] or "{}")
+    except (TypeError, ValueError):
+        stats = {}
+    if "kospi_change" not in stats or "kospi_change_rate" not in stats:
+        return HealthCheck(
+            name="T1-2b",
+            title="KOSPI change/rate 정합",
+            status="skip",
+            detail="stats_json에 change 정보 없음",
+        )
+    change = float(stats.get("kospi_change", 0.0) or 0.0)
+    rate = float(stats.get("kospi_change_rate", 0.0) or 0.0)
+    detail = f"change={change:+.2f} rate={rate:+.2f}%"
+    # 한쪽만 0이면 silent fail 의심.
+    if (change != 0.0 and rate == 0.0) or (rate != 0.0 and change == 0.0):
+        return HealthCheck(
+            name="T1-2b",
+            title="KOSPI change/rate 정합",
+            status="fail",
+            detail=detail + " (한쪽 0 — KIS 응답 키 오파싱 의심)",
+            threshold="(change == 0) == (rate == 0)",
+        )
+    return HealthCheck(
+        name="T1-2b",
+        title="KOSPI change/rate 정합",
+        status="pass",
+        detail=detail,
     )
 
 
@@ -640,6 +695,7 @@ def run_health_check(
     try:
         report.add(_check_analysis_results(conn, date))
         report.add(_check_kospi_index(conn, date))
+        report.add(_check_kospi_change_consistency(conn, date))
         report.add(_check_foreign_net_buy(conn, date))
         for c in _check_score_loss_rates(conn, date):
             report.add(c)
