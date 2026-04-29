@@ -132,13 +132,37 @@ def backfill_recent(
 
     if apply:
         # 보고서 파일 저장 (재수집은 후속 Phase 담당이므로 흔적만 남김).
+        # amendments_full / periodics_full: refetch_amendments.py 등 후속
+        # 도구가 unique 종목 전체를 추출할 수 있도록 truncate 없이 저장.
+        # examples 필드는 사람이 읽기 위한 상위 10개로 유지.
+        full_stats = dict(stats)
+        full_stats["amendments_full"] = [
+            {
+                "stock_code": it.get("stock_code"),
+                "corp_name": it.get("corp_name"),
+                "report_nm": it.get("report_nm"),
+                "rcept_no": it.get("rcept_no"),
+                "rcept_dt": it.get("rcept_dt"),
+            }
+            for it in amendments
+        ]
+        full_stats["periodics_full"] = [
+            {
+                "stock_code": it.get("stock_code"),
+                "corp_name": it.get("corp_name"),
+                "report_nm": it.get("report_nm"),
+                "rcept_no": it.get("rcept_no"),
+                "rcept_dt": it.get("rcept_dt"),
+            }
+            for it in periodics
+        ]
         report_dir = ROOT / "data" / "disclosure_reports"
         report_dir.mkdir(parents=True, exist_ok=True)
         out = report_dir / (
             f"backfill_{bgn_de}_{end_de}_{today.strftime('%H%M%S')}.json"
         )
         out.write_text(
-            json.dumps(stats, ensure_ascii=False, indent=2),
+            json.dumps(full_stats, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         logger.info("백필 보고서 저장: %s", out)
