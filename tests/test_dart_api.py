@@ -350,6 +350,85 @@ def test_account_id_match_takes_priority(client: DARTClient) -> None:
     assert result == 999  # account_id 우선
 
 
+# ================================================================
+# N1: IFRS account_id로 매출/영업이익/당기순이익 매칭 보강
+# ================================================================
+def test_revenue_matches_via_ifrs_full_revenue_id(client: DARTClient) -> None:
+    """account_nm이 변형되어도 ifrs-full_Revenue로 매출액 매칭."""
+    df = pd.DataFrame([
+        _row("CIS", "수익(매출액)", "2186637586358"),
+    ])
+    df.loc[0, "account_id"] = "ifrs-full_Revenue"
+    result = client._get_account_value(
+        df, "IS",
+        ["매출액", "매출", "수익(매출액)", "영업수익"],
+        account_ids=["ifrs-full_Revenue"],
+    )
+    assert result == 2186637586358
+
+
+def test_op_income_matches_via_dart_op_income_loss(client: DARTClient) -> None:
+    """K-IFRS 한국 회사 표준 dart_OperatingIncomeLoss로 영업이익 매칭."""
+    df = pd.DataFrame([
+        _row("CIS", "영업이익", "104374493823"),
+    ])
+    df.loc[0, "account_id"] = "dart_OperatingIncomeLoss"
+    result = client._get_account_value(
+        df, "IS",
+        ["영업이익", "영업이익(손실)", "영업손익", "영업손실"],
+        account_ids=[
+            "dart_OperatingIncomeLoss",
+            "ifrs-full_ProfitLossFromOperatingActivities",
+        ],
+    )
+    assert result == 104374493823
+
+
+def test_op_income_matches_via_ifrs_op_activities(client: DARTClient) -> None:
+    """일부 회사는 ifrs-full_ProfitLossFromOperatingActivities 사용."""
+    df = pd.DataFrame([
+        _row("CIS", "영업이익(손실)", "55_000_000_000"),
+    ])
+    df.loc[0, "account_id"] = "ifrs-full_ProfitLossFromOperatingActivities"
+    result = client._get_account_value(
+        df, "IS",
+        ["영업이익", "영업이익(손실)"],
+        account_ids=[
+            "dart_OperatingIncomeLoss",
+            "ifrs-full_ProfitLossFromOperatingActivities",
+        ],
+    )
+    assert result == 55_000_000_000
+
+
+def test_net_income_matches_via_ifrs_profit_loss(client: DARTClient) -> None:
+    """ifrs-full_ProfitLoss로 당기순이익 매칭 — 변형 account_nm 통과."""
+    df = pd.DataFrame([
+        _row("IS", "당기순이익(손실)", "80_000_000_000"),
+    ])
+    df.loc[0, "account_id"] = "ifrs-full_ProfitLoss"
+    result = client._get_account_value(
+        df, "IS",
+        ["당기순이익", "당기순이익(손실)"],
+        account_ids=["ifrs-full_ProfitLoss"],
+    )
+    assert result == 80_000_000_000
+
+
+def test_revenue_via_id_when_nm_completely_missing(client: DARTClient) -> None:
+    """account_nm이 본 후보 리스트에 전혀 없을 때도 ID로만 매칭."""
+    df = pd.DataFrame([
+        _row("IS", "totally_unknown_label", "1234567890"),
+    ])
+    df.loc[0, "account_id"] = "ifrs-full_Revenue"
+    result = client._get_account_value(
+        df, "IS",
+        ["매출액"],  # 후보에 없음
+        account_ids=["ifrs-full_Revenue"],
+    )
+    assert result == 1234567890
+
+
 def test_account_id_falls_through_to_nm(client: DARTClient) -> None:
     """account_id 미일치 시 nm 매칭으로 fallback."""
     df = pd.DataFrame([

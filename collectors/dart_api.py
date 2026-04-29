@@ -350,18 +350,29 @@ class DARTClient:
 
         # === 당기 재무제표 ===
         # sector 분기로 금융주 매출은 합산. 일반 종목/sector None은 기본 룰.
+        # N1: 한글 account_nm 변형(공백/괄호) 광범위 → IFRS account_id
+        # 우선 매칭. _get_account_value 1단계가 account_id로 정확 일치 시도.
         fin_rev = self._calc_financial_revenue(df, sector, stock_code)
         if fin_rev is not None:
             metrics["revenue"] = fin_rev
         else:
             metrics["revenue"] = self._get_account_value(
-                df, "IS", ["매출액", "매출", "수익(매출액)", "영업수익"]
+                df, "IS",
+                ["매출액", "매출", "수익(매출액)", "영업수익"],
+                account_ids=["ifrs-full_Revenue"],
             )
         metrics["operating_income"] = self._get_account_value(
-            df, "IS", ["영업이익", "영업이익(손실)", "영업손익", "영업손실"]
+            df, "IS",
+            ["영업이익", "영업이익(손실)", "영업손익", "영업손실"],
+            account_ids=[
+                "dart_OperatingIncomeLoss",
+                "ifrs-full_ProfitLossFromOperatingActivities",
+            ],
         )
         metrics["net_income"] = self._get_account_value(
-            df, "IS", ["당기순이익", "당기순이익(손실)"]
+            df, "IS",
+            ["당기순이익", "당기순이익(손실)"],
+            account_ids=["ifrs-full_ProfitLoss"],
         )
         metrics["total_assets"] = self._get_account_value(df, "BS", ["자산총계"])
         metrics["total_liabilities"] = self._get_account_value(df, "BS", ["부채총계"])
@@ -417,9 +428,24 @@ class DARTClient:
         # === 전년도 데이터로 성장률 계산 (v2.0 신설) ===
         prev_df = self.get_financial_statements(stock_code, year - 1)
         if prev_df is not None and not prev_df.empty:
-            prev_rev = self._get_account_value(prev_df, "IS", ["매출액", "매출", "수익(매출액)", "영업수익"])
-            prev_op = self._get_account_value(prev_df, "IS", ["영업이익", "영업이익(손실)", "영업손익", "영업손실"])
-            prev_net = self._get_account_value(prev_df, "IS", ["당기순이익", "당기순이익(손실)"])
+            prev_rev = self._get_account_value(
+                prev_df, "IS",
+                ["매출액", "매출", "수익(매출액)", "영업수익"],
+                account_ids=["ifrs-full_Revenue"],
+            )
+            prev_op = self._get_account_value(
+                prev_df, "IS",
+                ["영업이익", "영업이익(손실)", "영업손익", "영업손실"],
+                account_ids=[
+                    "dart_OperatingIncomeLoss",
+                    "ifrs-full_ProfitLossFromOperatingActivities",
+                ],
+            )
+            prev_net = self._get_account_value(
+                prev_df, "IS",
+                ["당기순이익", "당기순이익(손실)"],
+                account_ids=["ifrs-full_ProfitLoss"],
+            )
 
             metrics["prev_revenue"] = prev_rev
             metrics["prev_operating_income"] = prev_op
@@ -477,7 +503,16 @@ class DARTClient:
             "operating_income": ["영업이익", "영업이익(손실)", "영업손익", "영업손실"],
             "revenue": ["매출액", "매출", "수익(매출액)", "영업수익"],
         }
+        # N1: IFRS account_id를 우선 매칭하여 한글 변형(공백/괄호) 누락 방지.
+        account_ids_map = {
+            "operating_income": [
+                "dart_OperatingIncomeLoss",
+                "ifrs-full_ProfitLossFromOperatingActivities",
+            ],
+            "revenue": ["ifrs-full_Revenue"],
+        }
         names = account_names.get(metric, ["매출액"])
+        ids = account_ids_map.get(metric)
 
         decline_count = 0
         for y in range(year, year - 3, -1):
@@ -486,8 +521,12 @@ class DARTClient:
             if curr_df is None or prev_df is None:
                 break
 
-            curr_val = self._get_account_value(curr_df, "IS", names)
-            prev_val = self._get_account_value(prev_df, "IS", names)
+            curr_val = self._get_account_value(
+                curr_df, "IS", names, account_ids=ids,
+            )
+            prev_val = self._get_account_value(
+                prev_df, "IS", names, account_ids=ids,
+            )
 
             if curr_val < prev_val:
                 decline_count += 1
@@ -654,7 +693,9 @@ class DARTClient:
                 break
 
             net_income = self._get_account_value(
-                df, "IS", ["당기순이익", "당기순이익(손실)"]
+                df, "IS",
+                ["당기순이익", "당기순이익(손실)"],
+                account_ids=["ifrs-full_ProfitLoss"],
             )
             if net_income < 0:
                 loss_count += 1
