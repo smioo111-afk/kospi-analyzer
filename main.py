@@ -27,10 +27,10 @@ from bot.telegram_bot import KOSPIBot
 from collectors.dart_api import DARTClient
 from collectors.kis_api import KISClient, KISAPIError
 from config.settings import (
-    KISConfig,
     LogConfig,
     SchedulerConfig,
     SignalConfig,
+    validate_required_env,
 )
 from database.history import AnalysisHistory
 from database.models import Database
@@ -815,9 +815,11 @@ async def main() -> None:
     setup_logging()
     logger.info("KOSPI 저평가 기업 분석 시스템 시작")
 
-    # API 키 확인
-    if not KISConfig.APP_KEY:
-        logger.error("KIS_APP_KEY가 설정되지 않았습니다. config/.env를 확인하세요.")
+    # SEC-4: 필수 환경변수 fail-fast (KIS, DART, Telegram).
+    try:
+        validate_required_env()
+    except EnvironmentError as e:
+        logger.error(str(e))
         sys.exit(1)
 
     args = sys.argv[1:]
@@ -858,8 +860,11 @@ def run_bot() -> None:
     logger.info("KOSPI 저평가 기업 분석 시스템 시작")
     logger.info("텔레그램 봇 + 스케줄러 모드")
 
-    if not KISConfig.APP_KEY:
-        logger.error("KIS_APP_KEY가 설정되지 않았습니다. config/.env를 확인하세요.")
+    # SEC-4: 필수 환경변수 fail-fast.
+    try:
+        validate_required_env()
+    except EnvironmentError as e:
+        logger.error(str(e))
         sys.exit(1)
 
     db = Database()

@@ -442,3 +442,39 @@ class LogConfig:
     LOG_DIR: str = "logs"
     MAX_FILE_SIZE_MB: int = 10
     BACKUP_COUNT: int = 5
+
+
+# ----------------------------------------------------------------------
+# SEC-4: 필수 환경변수 fail-fast 검증
+# ----------------------------------------------------------------------
+# 봇/파이프라인 시작 직후 호출. 운영 필수 키가 비어 있으면 즉시 종료시켜
+# silent fail (예: KIS 토큰 없이 401 무한 재시도, 텔레그램 발송 실패 누적)
+# 을 차단한다. 클래스 속성은 모듈 import 시점에 os.getenv("..", "")로
+# 캡처되므로, 이 검증도 환경변수가 아닌 캡처된 값(클래스 속성)을 본다.
+REQUIRED_ENV_VARS: tuple[tuple[str, str], ...] = (
+    ("KIS_APP_KEY", "KIS Open API 앱키"),
+    ("KIS_APP_SECRET", "KIS Open API 앱시크릿"),
+    ("DART_API_KEY", "DART Open API 키"),
+    ("TELEGRAM_BOT_TOKEN", "텔레그램 봇 토큰"),
+    ("TELEGRAM_CHAT_ID", "텔레그램 채팅 ID"),
+)
+
+
+def validate_required_env() -> None:
+    """필수 환경변수가 모두 채워졌는지 확인. 비면 EnvironmentError 발생.
+
+    config/.env (또는 .env)는 settings.py 모듈 로드 시점에 load_dotenv로
+    이미 적용된다. 이 함수는 그 이후 실제로 채워진 값만 통과시킨다.
+    공백만 있는 값(`"   "`)도 누락으로 본다.
+    """
+    missing: list[str] = []
+    for key, desc in REQUIRED_ENV_VARS:
+        val = os.getenv(key, "")
+        if not val or not val.strip():
+            missing.append(f"{key} ({desc})")
+    if missing:
+        raise EnvironmentError(
+            "필수 환경변수 누락 — 시작할 수 없습니다:\n  - "
+            + "\n  - ".join(missing)
+            + "\nconfig/.env 또는 .env 파일을 확인하세요."
+        )
