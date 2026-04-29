@@ -348,6 +348,19 @@ class DARTClient:
             "year": year,
         }
 
+        # A1 Phase 0: 공시 추적 메타데이터.
+        # DART parquet의 모든 행은 동일 보고서(rcept_no)에서 왔으므로
+        # 첫 행의 rcept_no를 채택. rcept_dt는 rcept_no 앞 8자(YYYYMMDD).
+        if "rcept_no" in df.columns and not df.empty:
+            try:
+                rcept_no = str(df["rcept_no"].iloc[0]).strip()
+                if rcept_no and rcept_no.lower() not in ("none", "nan"):
+                    metrics["rcept_no"] = rcept_no
+                    if len(rcept_no) >= 8 and rcept_no[:8].isdigit():
+                        metrics["rcept_dt"] = rcept_no[:8]
+            except (IndexError, KeyError):
+                pass
+
         # === 당기 재무제표 ===
         # sector 분기로 금융주 매출은 합산. 일반 종목/sector None은 기본 룰.
         # N1: 한글 account_nm 변형(공백/괄호) 광범위 → IFRS account_id

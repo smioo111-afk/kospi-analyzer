@@ -261,6 +261,8 @@ class Database:
                 consecutive_op_decline_years INTEGER DEFAULT 0,
                 consecutive_revenue_decline_years INTEGER DEFAULT 0,
                 sector TEXT DEFAULT '기타',
+                rcept_no TEXT DEFAULT '',
+                rcept_dt TEXT DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
                 UNIQUE(stock_code, year, quarter)
             );
@@ -305,6 +307,12 @@ class Database:
             "ADD COLUMN growth_score INTEGER DEFAULT 0",
             "ALTER TABLE stock_scores "
             "ADD COLUMN quality_score INTEGER DEFAULT 0",
+            # A1 Phase 0: 공시 추적용. rcept_no는 DART 접수번호 (정정공시
+            # 판별 키), rcept_dt는 공시일(YYYYMMDD).
+            "ALTER TABLE financial_metrics "
+            "ADD COLUMN rcept_no TEXT DEFAULT ''",
+            "ALTER TABLE financial_metrics "
+            "ADD COLUMN rcept_dt TEXT DEFAULT ''",
         ):
             try:
                 conn.execute(ddl)
@@ -531,8 +539,9 @@ class Database:
                 ebitda, free_cash_flow, cash_equivalents, depreciation,
                 prev_revenue, prev_operating_income, prev_net_income,
                 consecutive_loss_years, consecutive_op_decline_years,
-                consecutive_revenue_decline_years, sector, updated_at)
-               VALUES (?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?, ?,?)""",
+                consecutive_revenue_decline_years, sector,
+                rcept_no, rcept_dt, updated_at)
+               VALUES (?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?, ?, ?,?,?)""",
             (
                 metrics.get("stock_code", ""),
                 metrics.get("year", 0),
@@ -563,6 +572,9 @@ class Database:
                 metrics.get("consecutive_op_decline_years", 0),
                 metrics.get("consecutive_revenue_decline_years", 0),
                 metrics.get("sector", "기타"),
+                # A1 Phase 0: 공시 추적 메타데이터 (선택, 미주입 시 빈 값)
+                metrics.get("rcept_no", ""),
+                metrics.get("rcept_dt", ""),
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             ),
         )
