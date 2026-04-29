@@ -66,7 +66,12 @@ def _build_db(tmp_path: Path) -> Path:
             year INTEGER NOT NULL,
             quarter TEXT DEFAULT 'annual',
             revenue INTEGER DEFAULT 0,
-            free_cash_flow INTEGER DEFAULT 0
+            operating_income INTEGER DEFAULT 0,
+            net_income INTEGER DEFAULT 0,
+            prev_net_income INTEGER DEFAULT 0,
+            free_cash_flow INTEGER DEFAULT 0,
+            consecutive_loss_years INTEGER DEFAULT 0,
+            consecutive_revenue_decline_years INTEGER DEFAULT 0
         );
         CREATE TABLE performance_tracking (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,15 +127,24 @@ def _seed_healthy(path: Path, date: str = "2026-04-28") -> None:
         "momentum_score, quality_score, signal) VALUES (?,?,?,?,?,?,?,?,?,?)",
         rows,
     )
-    # 재무: 결손율 낮게
+    # 재무: 결손율 낮게. T2-1 페널티 조건은 모두 0(미발동)으로 두어
+    # _seed_healthy 데이터는 카테고리 합 == total_score를 유지한다.
     fin_rows = []
     for i in range(100):
         rev = 0 if i < 3 else 1_000_000_000
         fcf = 0 if i < 5 else 100_000_000
-        fin_rows.append((f"{i:06d}", 2025, "annual", rev, fcf))
+        op_inc = 0 if rev == 0 else 100_000_000
+        net_inc = 0 if rev == 0 else 80_000_000
+        fin_rows.append((
+            f"{i:06d}", 2025, "annual",
+            rev, op_inc, net_inc, 50_000_000,
+            fcf, 0, 0,
+        ))
     conn.executemany(
         "INSERT INTO financial_metrics (stock_code, year, quarter, "
-        "revenue, free_cash_flow) VALUES (?,?,?,?,?)",
+        "revenue, operating_income, net_income, prev_net_income, "
+        "free_cash_flow, consecutive_loss_years, "
+        "consecutive_revenue_decline_years) VALUES (?,?,?,?,?,?,?,?,?,?)",
         fin_rows,
     )
     # 성과 추적: 최신 갱신, cascade 없음
@@ -344,6 +358,128 @@ def test_dataclass_round_trip():
     assert d["date"] == "2026-04-28"
     assert d["overall"] == "pass"
     assert d["checks"][0]["name"] == "X"
+
+
+# ----------------------------------------------------------------------
+# T1-4b 의미 변경: FCF 음수는 정상, 데이터 결손만 카운트
+# ----------------------------------------------------------------------
+def test_t14b_excludes_genuine_negative_fcf(tmp_path):
+    """quality=0 + FCF<0 종목이 많아도 결손 비율은 낮아야 한다."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    conn = sqlite3.connect(db)
+    # 50종목 모두 quality=0으로 만들면서 FCF는 음수로 (정상 시그널).
+    # 합산 정합성 유지를 위해 quality 빠진 만큼 다른 카테고리 보정.
+    conn.execute(
+        """UPDATE stock_scores
+              SET quality_score=0,
+                  total_score=value_score+financial_score+growth_score
+                              +momentum_score
+            WHERE analysis_date='2026-04-28'""",
+    )
+    # 모든 financial_metrics에 매칭되는 행을 두고 FCF만 음수.
+    conn.execute(
+        "UPDATE financial_metrics SET free_cash_flow=-100000000 "
+        "WHERE year=2025",
+    )
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    t14b = next(c for c in rep.checks if c.name == "T1-4b")
+    # 전체 q=0이지만 결손 0건 → pass
+    assert t14b.status == "pass", f"detail: {t14b.detail}"
+
+
+def test_t14b_detects_data_loss_only(tmp_path):
+    """financial_metrics row가 비어 있는 q=0 종목만 결손으로 카운트."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    conn = sqlite3.connect(db)
+    # 모든 종목 q=0으로 만들고, 30/50종목은 fm row가 비어있는 상태(rev=0,fcf=0)
+    # 로 남기되, 나머지 20종목은 fm에 값이 있는(FCF<0) 상태로 둔다.
+    conn.execute(
+        """UPDATE stock_scores
+              SET quality_score=0,
+                  total_score=value_score+financial_score+growth_score
+                              +momentum_score
+            WHERE analysis_date='2026-04-28'""",
+    )
+    # 50종목 중 30종목의 fm을 결손(rev=0, fcf=0)으로 남기고, 나머지 20종목은
+    # 음수 FCF(정상)으로. 30/50 = 60% 결손율 → 임계 10% 초과 → warning
+    conn.execute(
+        "UPDATE financial_metrics SET revenue=0, free_cash_flow=0, "
+        "operating_income=0, net_income=0, prev_net_income=0 "
+        "WHERE year=2025 AND CAST(stock_code AS INTEGER) < 30",
+    )
+    conn.execute(
+        "UPDATE financial_metrics SET revenue=1000000000, "
+        "free_cash_flow=-100000000 "
+        "WHERE year=2025 AND CAST(stock_code AS INTEGER) >= 30",
+    )
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    t14b = next(c for c in rep.checks if c.name == "T1-4b")
+    assert t14b.status == "warning", f"detail: {t14b.detail}"
+    assert "결손" in t14b.detail
+
+
+# ----------------------------------------------------------------------
+# T2-1 페널티 인지: 의도된 페널티는 위반이 아님
+# ----------------------------------------------------------------------
+def test_t21_includes_penalty_3yr_revenue_decline(tmp_path):
+    """3년 연속 매출 감소 페널티(-5)가 적용된 종목은 위반 아님."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    conn = sqlite3.connect(db)
+    # stock_code=000010: total을 sum-5로 (페널티 인식).
+    conn.execute(
+        """UPDATE stock_scores
+              SET total_score=value_score+financial_score+growth_score
+                              +momentum_score+quality_score-5
+            WHERE stock_code='000010'""",
+    )
+    # fm에 페널티 조건 주입 + PL 정상값 (결손 분류 회피).
+    conn.execute(
+        """UPDATE financial_metrics
+              SET consecutive_revenue_decline_years=3,
+                  revenue=1000000000,
+                  operating_income=100000000,
+                  net_income=80000000,
+                  prev_net_income=80000000
+            WHERE stock_code='000010' AND year=2025""",
+    )
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    t21 = next(c for c in rep.checks if c.name == "T2-1")
+    assert t21.status == "pass", f"detail: {t21.detail}"
+
+
+def test_t21_includes_penalty_profit_to_loss(tmp_path):
+    """흑자→적자 페널티(-8)가 적용된 종목은 위반 아님."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """UPDATE stock_scores
+              SET total_score=value_score+financial_score+growth_score
+                              +momentum_score+quality_score-8
+            WHERE stock_code='000020'""",
+    )
+    conn.execute(
+        """UPDATE financial_metrics
+              SET prev_net_income=100000000,
+                  net_income=-50000000,
+                  revenue=1000000000,
+                  operating_income=10000000
+            WHERE stock_code='000020' AND year=2025""",
+    )
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    t21 = next(c for c in rep.checks if c.name == "T2-1")
+    assert t21.status == "pass", f"detail: {t21.detail}"
 
 
 # ----------------------------------------------------------------------
