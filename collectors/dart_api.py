@@ -827,6 +827,81 @@ class DARTClient:
         if self._api_call_count % 100 == 0:
             logger.info("DART API 호출 횟수: %d", self._api_call_count)
 
+    # ================================================================
+    # 공시 목록 조회 (A1: 공시 모니터링)
+    # ================================================================
+    def fetch_disclosure_list(
+        self,
+        bgn_de: str,
+        end_de: str,
+        corp_code: Optional[str] = None,
+        corp_cls: str = "Y",
+        pblntf_ty: Optional[str] = None,
+        page_count: int = 100,
+    ) -> list[dict]:
+        """DART list.json — 기간 내 공시 목록 조회.
+
+        Args:
+            bgn_de: 시작일 YYYYMMDD
+            end_de: 종료일 YYYYMMDD
+            corp_code: 특정 기업만 조회 (옵션)
+            corp_cls: 시장 구분 'Y'(KOSPI), 'K'(KOSDAQ), 'N'(KONEX), 'E'(기타)
+            pblntf_ty: 공시 유형 'A'(정기), 'I'(주요사항) 등 (옵션)
+            page_count: 페이지당 건수 (최대 100)
+
+        Returns:
+            list[dict]: 공시 항목 (rcept_no, corp_code, corp_name, stock_code,
+                        report_nm, rcept_dt, rm 등 포함). 빈 리스트면 결과 없음.
+        """
+        url = f"{DARTConfig.BASE_URL}/list.json"
+        results: list[dict] = []
+        page_no = 1
+        while True:
+            if self._api_call_count >= DARTConfig.DAILY_CALL_LIMIT:
+                logger.warning(
+                    "DART API 일일 호출 한도 도달, 공시 목록 조회 중단",
+                )
+                break
+            params: dict = {
+                "crtfc_key": DARTConfig.API_KEY,
+                "bgn_de": bgn_de,
+                "end_de": end_de,
+                "corp_cls": corp_cls,
+                "page_no": page_no,
+                "page_count": page_count,
+            }
+            if corp_code:
+                params["corp_code"] = corp_code
+            if pblntf_ty:
+                params["pblntf_ty"] = pblntf_ty
+
+            self._increment_call_count()
+            try:
+                response = requests.get(url, params=params, timeout=10)
+                data = response.json()
+            except Exception as e:
+                logger.warning("list.json 호출 실패 page=%d: %s", page_no, e)
+                break
+
+            status = data.get("status")
+            # 013 = 조회된 데이터가 없음 → 정상 종료
+            if status == "013":
+                break
+            if status != "000":
+                logger.warning(
+                    "list.json 비정상 응답 page=%d status=%s msg=%s",
+                    page_no, status, data.get("message", ""),
+                )
+                break
+
+            items = data.get("list") or []
+            results.extend(items)
+            total_page = int(data.get("total_page", 1) or 1)
+            if page_no >= total_page:
+                break
+            page_no += 1
+        return results
+
 
 # ================================================================
 # 테스트 실행
