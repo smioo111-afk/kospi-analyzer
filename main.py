@@ -12,6 +12,7 @@ APScheduler 기반으로 매일 자동 실행.
 import asyncio
 import logging
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -179,8 +180,13 @@ class AnalysisPipeline:
             bool: 성공 여부
         """
         analysis_date = datetime.now().strftime("%Y-%m-%d")
+        # B3: 사이클 단위 trace_id (8자 hex). 사이클 동안 로그 grep용 키.
+        trace_id = uuid.uuid4().hex[:8]
+        self._trace_id = trace_id
         logger.info("="*50)
-        logger.info("분석 파이프라인 시작: %s", analysis_date)
+        logger.info(
+            "분석 파이프라인 시작: %s [trace=%s]", analysis_date, trace_id,
+        )
         logger.info("="*50)
 
         try:
@@ -204,12 +210,20 @@ class AnalysisPipeline:
                 target_codes=target_codes,
             )
             logger.info(
-                "[2/6] 데이터 수집 완료 ✅ (종목: %d, 차트: %d, 재무: %d)",
-                len(price_list), len(chart_dict), len(financial_list)
+                "[2/6] 데이터 수집 완료 ✅ [trace=%s] "
+                "(종목: %d, 차트: %d, 재무: %d)",
+                trace_id, len(price_list), len(chart_dict),
+                len(financial_list),
             )
 
             if not price_list:
                 raise RuntimeError("시세 데이터 수집 실패: 0건")
+
+            # B3: 차트 수집 성공률 < 80% 이면 운영자에게 WARN.
+            # 차트는 모멘텀/52주 위치 산식의 핵심 입력이므로 손실 = 점수 왜곡.
+            await self._alert_low_collection_rate(
+                trace_id, len(chart_dict), len(price_list),
+            )
 
             # 3. 분석 실행
             logger.info("[3/6] 종합 스코어링 실행...")
@@ -427,11 +441,14 @@ class AnalysisPipeline:
             # autocheckpoint(=1000 page)와 별개로, 1회 큰 변동 후 즉시 정리.
             self.db.checkpoint_wal("PASSIVE")
 
-            logger.info("[6/6] 완료 ✅")
+            logger.info("[6/6] 완료 ✅ [trace=%s]", trace_id)
             logger.info("="*50)
-            logger.info("분석 파이프라인 완료: TOP1 = %s (%d점)",
-                        top_10[0]["stock_name"] if top_10 else "N/A",
-                        top_10[0]["total_score"] if top_10 else 0)
+            logger.info(
+                "분석 파이프라인 완료 [trace=%s]: TOP1 = %s (%d점)",
+                trace_id,
+                top_10[0]["stock_name"] if top_10 else "N/A",
+                top_10[0]["total_score"] if top_10 else 0,
+            )
             logger.info("="*50)
             return True
 
@@ -546,6 +563,38 @@ class AnalysisPipeline:
             price_list, _ = filter_admin_stocks(price_list)
 
         return price_list
+
+    # B3: 수집 성공률 임계. 80% 미달 시 운영자 알림.
+    COLLECTION_RATE_MIN: float = 0.80
+
+    async def _alert_low_collection_rate(
+        self, trace_id: str, collected: int, expected: int,
+    ) -> None:
+        """차트(또는 핵심 데이터) 수집 성공률이 임계 미만이면 WARN 전송.
+
+        expected==0이면 분모가 없어 검증 의미 없음 → 무시.
+        """
+        if expected <= 0:
+            return
+        rate = collected / expected
+        if rate >= self.COLLECTION_RATE_MIN:
+            return
+        logger.warning(
+            "[trace=%s] 차트 수집 성공률 저하: %.1f%% (%d/%d, 임계 %.0f%%)",
+            trace_id, rate * 100, collected, expected,
+            self.COLLECTION_RATE_MIN * 100,
+        )
+        try:
+            await self.bot.send_error_alert(
+                f"[trace={trace_id}] 차트 수집 성공률 "
+                f"{rate * 100:.1f}% ({collected}/{expected}) — "
+                f"임계 {self.COLLECTION_RATE_MIN * 100:.0f}% 미달",
+                "main_pipeline",
+            )
+        except Exception as e:
+            logger.warning(
+                "[trace=%s] 수집률 알림 발송 실패: %s", trace_id, e,
+            )
 
     async def _collect_data(
         self,
