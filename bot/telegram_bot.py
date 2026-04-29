@@ -33,6 +33,38 @@ from database.history import AnalysisHistory
 logger = logging.getLogger(__name__)
 
 
+# ----------------------------------------------------------------------
+# B-MERGE-PROC: 안전 merge 헬퍼
+# ----------------------------------------------------------------------
+# `{**a, **b}` 패턴은 b의 키가 빈 값(None/""/0)이어도 a의 의미 있는 값을
+# 덮어써서 데이터를 손실시킨다. _merge_keep_nonempty는 우선순위 순서대로
+# 누적하되, 빈 값으로의 덮어쓰기를 막는다 (등장한 첫 비어있지 않은 값 유지).
+_EMPTY_VALUES = (None, "", 0, 0.0)
+
+
+def _merge_keep_nonempty(*dicts: dict) -> dict:
+    """여러 dict를 우선순위 순(뒤가 우선)으로 병합하되, 새 값이 비어 있으면
+    기존 값을 보존한다.
+
+    - 키가 처음 등장하면 값 그대로 채택 (빈 값이라도)
+    - 같은 키가 다시 등장하면, 새 값이 비어 있지 않은 경우에만 갱신
+    - 의도: 빈/0 값으로 정상 값이 덮이는 silent fail 차단
+
+    예) _merge_keep_nonempty({"per": 12.0}, {"per": 0})  →  {"per": 12.0}
+        _merge_keep_nonempty({"per": 0}, {"per": 12.0})  →  {"per": 12.0}
+    """
+    result: dict = {}
+    for d in dicts:
+        if not d:
+            continue
+        for k, v in d.items():
+            if k not in result:
+                result[k] = v
+            elif v not in _EMPTY_VALUES:
+                result[k] = v
+    return result
+
+
 class KOSPIBot:
     """KOSPI 분석 텔레그램 봇.
 
@@ -251,11 +283,12 @@ class KOSPIBot:
             return
 
         # daily_report_log에 TOP 10 진입 이력이 있으면 v3 확장 필드(성장/퀄리티
-        # 점수, 적정주가, 수급)를 보강한다. score 키가 우선이라 기본 v1 컬럼은
-        # stock_scores 값이 유지된다.
+        # 점수, 적정주가, 수급)를 보강한다. _merge_keep_nonempty: 우선순위는
+        # score(stock_scores) > v3_log지만, score의 빈 값(0/'')이 v3_log의
+        # 의미 있는 값을 덮어쓰지 못하게 한다. (B-MERGE-PROC)
         v3_log = self.db.get_latest_report_log_for_stock(stock_code)
         if v3_log:
-            score = {**v3_log, **score}
+            score = _merge_keep_nonempty(v3_log, score)
 
         history_data = self.db.get_stock_history(stock_code, days=5)
 
