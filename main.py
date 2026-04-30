@@ -395,6 +395,25 @@ class AnalysisPipeline:
                     code = p["stock_code"]
                     previous_prices[code] = self.db.get_previous_price(code)
 
+            # 단계 1: TOP 10 매수 상태 분류 (BUY/WATCH/AVOID + buy_score)
+            from analysis.buy_state import (
+                classify_buy_state, calculate_buy_score,
+                get_state_label, get_state_reason,
+            )
+            for stock in top_10:
+                code = stock.get("stock_code", "")
+                # stoploss_map에서 effective_stoploss를 score dict에 주입
+                # (분류기는 stoploss_price 키를 봄)
+                sl = stoploss_map.get(code, {})
+                if sl.get("effective_stoploss", 0) and not stock.get("stoploss_price"):
+                    stock["stoploss_price"] = sl["effective_stoploss"]
+                history = self.db.get_stock_history(code, days=5)
+                state = classify_buy_state(stock)
+                stock["buy_state"] = state.value
+                stock["buy_state_label"] = get_state_label(state)
+                stock["buy_score"] = calculate_buy_score(stock, history)
+                stock["buy_state_reason"] = get_state_reason(state, stock)
+
             # 9. 텔레그램 발송
             await self.bot.send_daily_report(
                 top_10=top_10,

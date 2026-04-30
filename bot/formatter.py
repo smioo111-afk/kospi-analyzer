@@ -145,6 +145,13 @@ class MessageFormatter:
                 lines.append(section)
                 lines.append("")
 
+        # 단계 1: 매수 추천/회피 섹션 (top_10에 buy_state 필드 있을 때만)
+        if top_10 and any(s.get("buy_state") for s in top_10):
+            buy_section = self.format_buy_recommendations(top_10)
+            if buy_section:
+                lines.append(buy_section)
+                lines.append("")
+
         # 경고 종목
         if warnings:
             lines.append("⚠️ 경고 종목")
@@ -250,9 +257,28 @@ class MessageFormatter:
         lines = [
             f"{emoji} {self._format_name_code(name, code)}{change_str}",
             f"   종합점수: {total}/100 | 신호: {signal}",
+        ]
+
+        # 단계 1: 매수 상태 라인 (buy_state 필드가 있을 때만)
+        buy_state_label = stock.get("buy_state_label", "")
+        if buy_state_label:
+            buy_score_val = stock.get("buy_score", 0)
+            reason_text = stock.get("buy_state_reason", "")
+            if reason_text:
+                lines.append(
+                    f"   매수상태: {buy_state_label} "
+                    f"(buy_score: {buy_score_val:.2f}, {reason_text})"
+                )
+            else:
+                lines.append(
+                    f"   매수상태: {buy_state_label} "
+                    f"(buy_score: {buy_score_val:.2f})"
+                )
+
+        lines.extend([
             f"   PER: {per} | PBR: {pbr} | ROE: {roe}%",
             f"   현재가: {price:,}원",
-        ]
+        ])
 
         # 적정주가
         fair_low = stock.get("fair_value_low", 0)
@@ -535,6 +561,69 @@ class MessageFormatter:
     # ================================================================
     # 포트폴리오
     # ================================================================
+    def format_buy_recommendations(
+        self,
+        top_10: list[dict[str, Any]],
+    ) -> str:
+        """일일 리포트 하단 매수 추천/회피 섹션.
+
+        BUY: buy_score 내림차순 정렬, 사유 간략 표기.
+        AVOID: 사유별로 묶어 표기.
+        """
+        buys = [s for s in top_10 if s.get("buy_state") == "buy"]
+        avoids = [s for s in top_10 if s.get("buy_state") == "avoid"]
+
+        lines: list[str] = []
+        lines.append("🎯 매수 가능 종목 (buy_score 순)")
+        if not buys:
+            lines.append("   오늘 매수 가능 종목 없음")
+        else:
+            buys_sorted = sorted(
+                buys, key=lambda s: s.get("buy_score", 0), reverse=True,
+            )
+            for idx, s in enumerate(buys_sorted, start=1):
+                code = s.get("stock_code", "")
+                name = s.get("stock_name", "")
+                buy_score = s.get("buy_score", 0)
+                reason = self._buy_reason_summary(s)
+                line = (
+                    f"{idx}. {self._format_name_code(name, code)} "
+                    f"- score {buy_score:.2f}"
+                )
+                lines.append(line)
+                if reason:
+                    lines.append(f"   사유: {reason}")
+
+        if avoids:
+            lines.append("")
+            lines.append("🔴 매수 회피 (이유)")
+            for s in avoids:
+                code = s.get("stock_code", "")
+                name = s.get("stock_name", "")
+                reason = s.get("buy_state_reason") or "조건 미달"
+                lines.append(
+                    f"- {self._format_name_code(name, code)}: {reason}"
+                )
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _buy_reason_summary(score: dict[str, Any]) -> str:
+        """BUY 종목의 강점 사유 요약."""
+        parts: list[str] = []
+        momentum = score.get("momentum_score", 0) or 0
+        if momentum >= 14:
+            parts.append("추세 강함")
+        elif momentum >= 8:
+            parts.append("추세 양호")
+        gap = score.get("fair_value_gap", 0)
+        if isinstance(gap, (int, float)) and gap < -5:
+            parts.append("저평가")
+        w52 = score.get("week52_position", 50) or 50
+        if w52 < 30:
+            parts.append("저점 근처")
+        return " + ".join(parts)
+
     def format_portfolio(
         self,
         portfolio: list[dict[str, Any]],
