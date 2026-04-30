@@ -618,3 +618,107 @@ def test_extract_prev_revenue_handles_missing_sector(
     metrics = client.extract_financial_metrics("005930", year=2025)
     assert metrics["revenue"] == 100000
     assert metrics["prev_revenue"] == 80000
+
+
+# ================================================================
+# E1 Phase 2: BS account_id fallback (4-30 진단 그룹 A 8종 회복)
+# 배경: revenue/op/net에는 86ec996에서 account_ids fallback 추가됐으나
+#       BS (assets/equity 등)에는 미적용. account_nm 변형
+#       ("총자산", "자산 합계", "기말자본", "자본") 매칭 실패 → 결손 8종.
+# ================================================================
+def test_extract_total_assets_uses_account_id_fallback(
+    client: DARTClient, monkeypatch
+) -> None:
+    """account_nm이 비표준이어도 ifrs-full_Assets로 매칭."""
+    df = pd.DataFrame([
+        _row("BS", "총자산", "18753010588000"),  # 047050/004170 패턴
+        _row("BS", "자본총계", "7800000000000"),
+        _row("CIS", "매출액", "32000000000000"),
+    ])
+    df.loc[0, "account_id"] = "ifrs-full_Assets"
+    df.loc[1, "account_id"] = "ifrs-full_Equity"
+    df.loc[2, "account_id"] = "ifrs-full_Revenue"
+
+    monkeypatch.setattr(client, "get_financial_statements", lambda c, y: df)
+    m = client.extract_financial_metrics("047050", year=2025)
+    assert m["total_assets"] == 18753010588000
+
+
+def test_extract_total_equity_uses_account_id_fallback(
+    client: DARTClient, monkeypatch
+) -> None:
+    """기말자본/자본 등 비표준 account_nm도 ifrs-full_Equity로 매칭."""
+    df = pd.DataFrame([
+        _row("BS", "자산총계", "3134104265112"),
+        _row("BS", "기말자본", "676823890646"),  # 066970 패턴
+        _row("CIS", "매출액", "2154938965103"),
+    ])
+    df.loc[0, "account_id"] = "ifrs-full_Assets"
+    df.loc[1, "account_id"] = "ifrs-full_Equity"
+    df.loc[2, "account_id"] = "ifrs-full_Revenue"
+
+    monkeypatch.setattr(client, "get_financial_statements", lambda c, y: df)
+    m = client.extract_financial_metrics("066970", year=2025)
+    assert m["total_equity"] == 676823890646
+
+
+def test_extract_handles_korean_label_variants(
+    client: DARTClient, monkeypatch
+) -> None:
+    """account_id 없이도 label 후보 확장(`자산`, `자본`, `자산 합계`)으로 매칭."""
+    df = pd.DataFrame([
+        _row("BS", "자산", "10490130570000"),  # 005440 패턴
+        _row("BS", "자본", "7306462632000"),
+        _row("BS", "부채", "3183667938000"),
+        _row("CIS", "매출액", "8091605017000"),
+    ])
+    # account_id 컬럼 없이도 nm 매칭 가능해야 함
+    monkeypatch.setattr(client, "get_financial_statements", lambda c, y: df)
+    m = client.extract_financial_metrics("005440", year=2025)
+    assert m["total_assets"] == 10490130570000
+    assert m["total_equity"] == 7306462632000
+    assert m["total_liabilities"] == 3183667938000
+
+
+def test_extract_total_assets_label_only_still_works(
+    client: DARTClient, monkeypatch
+) -> None:
+    """기존 표준 label `자산총계` 회귀 방지."""
+    df = pd.DataFrame([
+        _row("BS", "자산총계", "1000000"),
+        _row("BS", "자본총계", "600000"),
+    ])
+    monkeypatch.setattr(client, "get_financial_statements", lambda c, y: df)
+    m = client.extract_financial_metrics("005930", year=2025)
+    assert m["total_assets"] == 1000000
+    assert m["total_equity"] == 600000
+
+
+def test_extract_real_cache_047050_posco_int_assets_recovered(
+    client: DARTClient,
+) -> None:
+    """4-30 진단 그룹 A: 047050 포스코인터내셔널 (account_nm='총자산')."""
+    pq = CACHE_DIR / "047050_2025_annual.parquet"
+    if not pq.exists():
+        pytest.skip("cache not present")
+    df = pd.read_parquet(pq)
+    val = client._get_account_value(
+        df, "BS", ["자산총계", "총자산", "자산 합계", "자산"],
+        account_ids=["ifrs-full_Assets"],
+    )
+    assert val == 18753010588000
+
+
+def test_extract_real_cache_066970_lnf_equity_recovered(
+    client: DARTClient,
+) -> None:
+    """4-30 진단 그룹 A: 066970 엘앤에프 (account_nm='기말자본')."""
+    pq = CACHE_DIR / "066970_2025_annual.parquet"
+    if not pq.exists():
+        pytest.skip("cache not present")
+    df = pd.read_parquet(pq)
+    val = client._get_account_value(
+        df, "BS", ["자본총계", "기말자본", "자본"],
+        account_ids=["ifrs-full_Equity"],
+    )
+    assert val == 676823890646

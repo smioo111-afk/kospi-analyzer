@@ -387,11 +387,29 @@ class DARTClient:
             ["당기순이익", "당기순이익(손실)"],
             account_ids=["ifrs-full_ProfitLoss"],
         )
-        metrics["total_assets"] = self._get_account_value(df, "BS", ["자산총계"])
-        metrics["total_liabilities"] = self._get_account_value(df, "BS", ["부채총계"])
-        metrics["total_equity"] = self._get_account_value(df, "BS", ["자본총계"])
-        metrics["current_assets"] = self._get_account_value(df, "BS", ["유동자산"])
-        metrics["current_liabilities"] = self._get_account_value(df, "BS", ["유동부채"])
+        # BS 계정 매칭: 한국 회사마다 account_nm 변형이 광범위
+        # ("총자산", "자산 합계", "자본", "기말자본", "자본 총계" 등).
+        # IFRS account_id 우선 fallback (E1 패턴, BS 갭 보완).
+        metrics["total_assets"] = self._get_account_value(
+            df, "BS", ["자산총계", "총자산", "자산 합계", "자산"],
+            account_ids=["ifrs-full_Assets"],
+        )
+        metrics["total_liabilities"] = self._get_account_value(
+            df, "BS", ["부채총계", "총부채", "부채 합계", "부채"],
+            account_ids=["ifrs-full_Liabilities"],
+        )
+        metrics["total_equity"] = self._get_account_value(
+            df, "BS", ["자본총계", "기말자본", "자본"],
+            account_ids=["ifrs-full_Equity"],
+        )
+        metrics["current_assets"] = self._get_account_value(
+            df, "BS", ["유동자산"],
+            account_ids=["ifrs-full_CurrentAssets"],
+        )
+        metrics["current_liabilities"] = self._get_account_value(
+            df, "BS", ["유동부채"],
+            account_ids=["ifrs-full_CurrentLiabilities"],
+        )
 
         # === 파생 지표 ===
         metrics["roe"] = self._calc_ratio(metrics["net_income"], metrics["total_equity"])
