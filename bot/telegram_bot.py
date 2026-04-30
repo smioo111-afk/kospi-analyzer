@@ -525,18 +525,37 @@ class KOSPIBot:
         # 포트폴리오 조회
         portfolio = self.db.get_portfolio()
 
-        # 최신 스코어 + 전일 종가 매핑
+        # 최신 스코어 + 전일 종가 + 손절 정보 매핑
         scores_map: dict[str, dict[str, Any]] = {}
         previous_prices: dict[str, int] = {}
+        stoploss_map: dict[str, dict[str, Any]] = {}
         for p in portfolio:
             code = p["stock_code"]
             score = self.db.get_stock_score(code)
             if score:
                 scores_map[code] = score
+                # 자정 모니터 등으로 stoploss=0이 들어온 경우 직전 영업일 행으로 폴백
+                sl_price = score.get("stoploss_price", 0) or 0
+                sl_pct = score.get("stoploss_pct", 0) or 0
+                if sl_price <= 0:
+                    history = self.db.get_stock_history(code, days=10)
+                    for h in history:
+                        if h.get("stoploss_price", 0) > 0:
+                            sl_price = h["stoploss_price"]
+                            sl_pct = h.get("stoploss_pct", 0) or sl_pct
+                            break
+                if sl_price > 0:
+                    stoploss_map[code] = {
+                        "effective_stoploss": sl_price,
+                        "effective_stoploss_pct": sl_pct,
+                    }
             previous_prices[code] = self.db.get_previous_price(code)
 
         msg = self.formatter.format_portfolio(
-            portfolio, scores_map, previous_prices=previous_prices,
+            portfolio,
+            scores_map=scores_map,
+            stoploss_map=stoploss_map,
+            previous_prices=previous_prices,
         )
         await update.message.reply_text(msg)
 

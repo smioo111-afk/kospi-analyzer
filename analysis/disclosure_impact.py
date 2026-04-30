@@ -228,6 +228,9 @@ def trigger_score_recalculation(
         return None
     price_data = _build_price_data_from_score_row(prev)
     prev_momentum = int(prev.get("momentum_score") or 0)
+    prev_stoploss = int(prev.get("stoploss_price") or 0)
+    prev_stoploss_pct = float(prev.get("stoploss_pct") or 0)
+    prev_atr = float(prev.get("atr") or 0)
 
     # 5) scorer 호출 (chart 없음 → momentum=0 산출)
     try:
@@ -248,9 +251,27 @@ def trigger_score_recalculation(
     penalty = int(result.get("penalties", 0))
     result["total_score"] = max(0, min(100, cat_sum + penalty))
 
-    # 7) DB 저장 (옵션)
+    # 6.5) 손절가/ATR 보존 — chart 없는 자정 모니터에서 scorer가 0을 반환하면
+    # save_stock_scores가 0으로 덮어쓰는 silent regression이 발생. 직전 행의
+    # 값이 양수일 때만 보존(momentum 보존 패턴과 동일). 신규 값이 양수면 우선.
+    new_stoploss = int(result.get("stoploss_price", 0) or 0)
+    new_stoploss_pct = float(result.get("stoploss_pct", 0) or 0)
+    new_atr = float(result.get("atr", 0) or 0)
+    eff_stoploss = new_stoploss if new_stoploss > 0 else prev_stoploss
+    eff_stoploss_pct = new_stoploss_pct if new_stoploss_pct != 0 else prev_stoploss_pct
+    eff_atr = new_atr if new_atr > 0 else prev_atr
+
+    # 7) DB 저장 (옵션) — save_stock_scores는 stoploss_map에서 손절/ATR을
+    # 읽으므로, 보존 결정한 값을 stoploss_map으로 전달한다.
     if save_to_db:
         today = datetime.now().strftime("%Y-%m-%d")
+        sl_map = {}
+        if eff_stoploss > 0 or eff_atr > 0 or eff_stoploss_pct != 0:
+            sl_map[stock_code] = {
+                "effective_stoploss": eff_stoploss,
+                "effective_stoploss_pct": eff_stoploss_pct,
+                "atr": eff_atr,
+            }
         try:
             db.save_stock_scores(
                 analysis_date=today,
@@ -261,7 +282,7 @@ def trigger_score_recalculation(
                     "signal": prev.get("signal", ""),
                     "signal_label": prev.get("signal_label", ""),
                 }],
-                stoploss_map=None,
+                stoploss_map=sl_map or None,
             )
         except Exception as e:
             logger.warning("stock_scores 저장 실패 %s: %s", stock_code, e)
