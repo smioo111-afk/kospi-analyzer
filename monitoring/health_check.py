@@ -14,6 +14,9 @@
     T1-6  financial_metrics revenue 결손율 < 5%
     T1-7  performance_tracking 갱신 (last_updated >= 분석일)
     T1-8  cascade 재발 감지 (return_1w == -100% 최근 5건+)
+    T1-10 prev_revenue 결손율 < 5%/10% (warn/fail)
+    T1-11 net_income 결손율 < 3%/5%
+    T1-12 BS(assets/equity) 결손율 < 3%/5% (rcept_no 있는 행만)
 
   Tier 2 (로직 정합성, 3건)
     T2-1  total_score == 5 카테고리 합 + 페널티 (불일치 5% 미만)
@@ -60,6 +63,21 @@ GROWTH_ZERO_RATE_MAX = 0.30   # 30%
 QUALITY_ZERO_RATE_MAX = 0.10  # 10%
 FCF_ZERO_RATE_MAX = 0.10      # 10%
 REVENUE_ZERO_RATE_MAX = 0.05  # 5%
+
+# T1-10: prev_revenue 결손율. 4-30 PR(1b09b83)로 122건 회복 후 잔존 ~1.9%
+# (신규/스핀오프 — 2024 사업보고서 부재). 5% 초과 시 silent regression 의심.
+PREV_REVENUE_ZERO_WARN = 0.05  # 5%
+PREV_REVENUE_ZERO_FAIL = 0.10  # 10%
+
+# T1-11: net_income 결손율. 4-30 PR(8aa236a) 후 0%. 3% 초과 시 parser 결함.
+NET_INCOME_ZERO_WARN = 0.03    # 3%
+NET_INCOME_ZERO_FAIL = 0.05    # 5%
+
+# T1-12: BS(total_assets/equity) 결손율. denominator는 rcept_no!='' 행만.
+# 우선주(11)/델리스팅(005308)/맥쿼리(088980) = rcept_no 빈값 자동 제외 →
+# 진짜 parser 결손만 측정. 4-30 PR(8aa236a) 후 0%.
+BS_ZERO_RATE_WARN = 0.03       # 3%
+BS_ZERO_RATE_FAIL = 0.05       # 5%
 
 SCORE_SUM_MISMATCH_RATE_MAX = 0.05  # 5%
 CASCADE_RECENT_THRESHOLD = 5
@@ -393,6 +411,140 @@ def _check_revenue_loss(conn: sqlite3.Connection, date: str) -> HealthCheck:
         status="pass" if rate < REVENUE_ZERO_RATE_MAX else "warning",
         detail=f"{row['z']}/{cnt} ({rate * 100:.1f}%, year={year})",
         threshold=f"< {REVENUE_ZERO_RATE_MAX * 100:.0f}%",
+    )
+
+
+def _check_prev_revenue_loss(
+    conn: sqlite3.Connection, date: str
+) -> HealthCheck:
+    """T1-10: prev_revenue 결손율.
+
+    조건: revenue > 0 AND prev_revenue = 0 (annual)
+    배경: 4-30 PR로 122건 회복 후 잔존 ~1.9% (신규/스핀오프 구조적).
+    임계: ≥10% fail / ≥5% warning / <5% pass.
+    """
+    year = datetime.strptime(date, "%Y-%m-%d").year - 1
+    row = conn.execute(
+        """SELECT COUNT(*) AS cnt,
+                  SUM(CASE WHEN prev_revenue=0 THEN 1 ELSE 0 END) AS z
+             FROM financial_metrics
+             WHERE year=? AND quarter='annual' AND revenue>0""",
+        (year,),
+    ).fetchone()
+    cnt = row["cnt"] or 0
+    if cnt == 0:
+        return HealthCheck(
+            name="T1-10",
+            title="prev_revenue 결손율",
+            status="skip",
+            detail=f"year={year} 재무 데이터 0건",
+        )
+    rate = (row["z"] or 0) / cnt
+    if rate >= PREV_REVENUE_ZERO_FAIL:
+        status = "fail"
+    elif rate >= PREV_REVENUE_ZERO_WARN:
+        status = "warning"
+    else:
+        status = "pass"
+    return HealthCheck(
+        name="T1-10",
+        title="prev_revenue 결손율",
+        status=status,
+        detail=f"{row['z']}/{cnt} ({rate * 100:.1f}%, year={year})",
+        threshold=(
+            f"warn≥{PREV_REVENUE_ZERO_WARN * 100:.0f}% "
+            f"fail≥{PREV_REVENUE_ZERO_FAIL * 100:.0f}%"
+        ),
+    )
+
+
+def _check_net_income_loss(
+    conn: sqlite3.Connection, date: str
+) -> HealthCheck:
+    """T1-11: net_income 결손율.
+
+    조건: revenue > 0 AND net_income = 0 (annual)
+    배경: 4-30 PR(8aa236a)로 0%. 임계: ≥5% fail / ≥3% warning.
+    """
+    year = datetime.strptime(date, "%Y-%m-%d").year - 1
+    row = conn.execute(
+        """SELECT COUNT(*) AS cnt,
+                  SUM(CASE WHEN net_income=0 THEN 1 ELSE 0 END) AS z
+             FROM financial_metrics
+             WHERE year=? AND quarter='annual' AND revenue>0""",
+        (year,),
+    ).fetchone()
+    cnt = row["cnt"] or 0
+    if cnt == 0:
+        return HealthCheck(
+            name="T1-11",
+            title="net_income 결손율",
+            status="skip",
+            detail=f"year={year} 재무 데이터 0건",
+        )
+    rate = (row["z"] or 0) / cnt
+    if rate >= NET_INCOME_ZERO_FAIL:
+        status = "fail"
+    elif rate >= NET_INCOME_ZERO_WARN:
+        status = "warning"
+    else:
+        status = "pass"
+    return HealthCheck(
+        name="T1-11",
+        title="net_income 결손율",
+        status=status,
+        detail=f"{row['z']}/{cnt} ({rate * 100:.1f}%, year={year})",
+        threshold=(
+            f"warn≥{NET_INCOME_ZERO_WARN * 100:.0f}% "
+            f"fail≥{NET_INCOME_ZERO_FAIL * 100:.0f}%"
+        ),
+    )
+
+
+def _check_bs_loss(conn: sqlite3.Connection, date: str) -> HealthCheck:
+    """T1-12: BS(assets/equity) 결손율.
+
+    조건: rcept_no != '' AND (total_assets=0 OR total_equity=0).
+    rcept_no 빈값 종목(우선주 11 + 005308 + 088980)은 구조적 결손 →
+    분모에서 자동 제외. 진짜 parser 결함만 측정한다.
+    배경: 4-30 PR(8aa236a)로 0%. 임계: ≥5% fail / ≥3% warning.
+    """
+    year = datetime.strptime(date, "%Y-%m-%d").year - 1
+    row = conn.execute(
+        """SELECT COUNT(*) AS cnt,
+                  SUM(CASE WHEN total_assets=0 OR total_equity=0
+                           THEN 1 ELSE 0 END) AS z
+             FROM financial_metrics
+             WHERE year=? AND quarter='annual' AND rcept_no!=''""",
+        (year,),
+    ).fetchone()
+    cnt = row["cnt"] or 0
+    if cnt == 0:
+        return HealthCheck(
+            name="T1-12",
+            title="BS 결손율",
+            status="skip",
+            detail=f"year={year} rcept_no 보유 행 0건",
+        )
+    rate = (row["z"] or 0) / cnt
+    if rate >= BS_ZERO_RATE_FAIL:
+        status = "fail"
+    elif rate >= BS_ZERO_RATE_WARN:
+        status = "warning"
+    else:
+        status = "pass"
+    return HealthCheck(
+        name="T1-12",
+        title="BS 결손율",
+        status=status,
+        detail=(
+            f"{row['z']}/{cnt} ({rate * 100:.1f}%, year={year}, "
+            f"rcept_no 있음만)"
+        ),
+        threshold=(
+            f"warn≥{BS_ZERO_RATE_WARN * 100:.0f}% "
+            f"fail≥{BS_ZERO_RATE_FAIL * 100:.0f}%"
+        ),
     )
 
 
@@ -769,6 +921,9 @@ def run_health_check(
             report.add(c)
         report.add(_check_fcf_loss(conn, date))
         report.add(_check_revenue_loss(conn, date))
+        report.add(_check_prev_revenue_loss(conn, date))
+        report.add(_check_net_income_loss(conn, date))
+        report.add(_check_bs_loss(conn, date))
         report.add(_check_perf_tracking(conn, date))
         report.add(_check_cascade_recent(conn))
         report.add(_check_disclosure_monitor_ran(conn, date))

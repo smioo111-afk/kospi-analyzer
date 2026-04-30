@@ -68,10 +68,14 @@ def _build_db(tmp_path: Path) -> Path:
             revenue INTEGER DEFAULT 0,
             operating_income INTEGER DEFAULT 0,
             net_income INTEGER DEFAULT 0,
+            prev_revenue INTEGER DEFAULT 0,
             prev_net_income INTEGER DEFAULT 0,
+            total_assets INTEGER DEFAULT 0,
+            total_equity INTEGER DEFAULT 0,
             free_cash_flow INTEGER DEFAULT 0,
             consecutive_loss_years INTEGER DEFAULT 0,
-            consecutive_revenue_decline_years INTEGER DEFAULT 0
+            consecutive_revenue_decline_years INTEGER DEFAULT 0,
+            rcept_no TEXT DEFAULT ''
         );
         CREATE TABLE performance_tracking (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,16 +146,22 @@ def _seed_healthy(path: Path, date: str = "2026-04-28") -> None:
         fcf = 0 if i < 5 else 100_000_000
         op_inc = 0 if rev == 0 else 100_000_000
         net_inc = 0 if rev == 0 else 80_000_000
+        prev_rev = 0 if (i < 3 or i == 6) else 900_000_000
+        # T1-12: rcept_no 없는 행(우선주 흉내) 일부 — 결손이어도 분모 제외
+        rcept = "" if i < 5 else "20260318000001"
+        assets = 0 if i < 5 else 5_000_000_000
+        equity = 0 if i < 5 else 3_000_000_000
         fin_rows.append((
             f"{i:06d}", 2025, "annual",
-            rev, op_inc, net_inc, 50_000_000,
-            fcf, 0, 0,
+            rev, op_inc, net_inc, prev_rev, 50_000_000,
+            assets, equity, fcf, 0, 0, rcept,
         ))
     conn.executemany(
         "INSERT INTO financial_metrics (stock_code, year, quarter, "
-        "revenue, operating_income, net_income, prev_net_income, "
-        "free_cash_flow, consecutive_loss_years, "
-        "consecutive_revenue_decline_years) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "revenue, operating_income, net_income, prev_revenue, "
+        "prev_net_income, total_assets, total_equity, free_cash_flow, "
+        "consecutive_loss_years, consecutive_revenue_decline_years, "
+        "rcept_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         fin_rows,
     )
     # 성과 추적: 최신 갱신, cascade 없음
@@ -185,8 +195,8 @@ def test_run_health_check_returns_report(tmp_path):
     assert isinstance(rep, HealthCheckReport)
     assert rep.date == "2026-04-28"
     assert rep.overall == "pass"
-    # 11개 + T1-4 분리 + T1-2b + T1-9 = 총 14개
-    assert len(rep.checks) == 14
+    # 11개 + T1-4 분리 + T1-2b + T1-9 + T1-10/11/12 = 총 17개
+    assert len(rep.checks) == 17
 
 
 def test_health_check_pass_on_healthy_data(tmp_path):
@@ -619,6 +629,143 @@ def test_thresholds_are_sane():
     assert 0 < GROWTH_ZERO_RATE_MAX < 1
     assert 0 < QUALITY_ZERO_RATE_MAX < 1
     assert KOSPI_INDEX_MIN < KOSPI_INDEX_MAX
+
+
+# ----------------------------------------------------------------------
+# T1-10/11/12: data completeness checks (4-30 PR — 142건 회복 후 인프라)
+# ----------------------------------------------------------------------
+def _find_check(rep, name):
+    return next((c for c in rep.checks if c.name == name), None)
+
+
+def test_t1_10_prev_revenue_pass_when_low_deficit(tmp_path):
+    """_seed_healthy: prev_revenue=0 4건/97 = 4.1% < 5% → pass."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    c = _find_check(rep, "T1-10")
+    assert c is not None and c.status == "pass"
+
+
+def test_t1_10_prev_revenue_warning_at_5_percent(tmp_path):
+    """5% 이상 결손 시 warning."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    conn = sqlite3.connect(db)
+    # revenue>0 인 종목(i>=3, 97건) 중 6건 prev_revenue=0 으로 (6.2%)
+    conn.execute(
+        "UPDATE financial_metrics SET prev_revenue=0 "
+        "WHERE stock_code IN (SELECT stock_code FROM financial_metrics "
+        "WHERE revenue>0 LIMIT 6)"
+    )
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    c = _find_check(rep, "T1-10")
+    assert c is not None and c.status == "warning"
+
+
+def test_t1_10_prev_revenue_fail_at_10_percent(tmp_path):
+    """10% 이상 결손 시 fail."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE financial_metrics SET prev_revenue=0 "
+        "WHERE stock_code IN (SELECT stock_code FROM financial_metrics "
+        "WHERE revenue>0 LIMIT 12)"
+    )
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    c = _find_check(rep, "T1-10")
+    assert c is not None and c.status == "fail"
+
+
+def test_t1_11_net_income_pass_when_zero_deficit(tmp_path):
+    """_seed_healthy: net_income=0 + revenue>0 인 종목 0건 → pass."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    c = _find_check(rep, "T1-11")
+    assert c is not None and c.status == "pass"
+
+
+def test_t1_11_net_income_warning_at_3_percent(tmp_path):
+    """3% 이상 결손 시 warning."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    conn = sqlite3.connect(db)
+    # 97건 중 4건 net=0 (4.1%)
+    conn.execute(
+        "UPDATE financial_metrics SET net_income=0 "
+        "WHERE stock_code IN (SELECT stock_code FROM financial_metrics "
+        "WHERE revenue>0 LIMIT 4)"
+    )
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    c = _find_check(rep, "T1-11")
+    assert c is not None and c.status == "warning"
+
+
+def test_t1_11_net_income_fail_at_5_percent(tmp_path):
+    """5% 이상 결손 시 fail."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE financial_metrics SET net_income=0 "
+        "WHERE stock_code IN (SELECT stock_code FROM financial_metrics "
+        "WHERE revenue>0 LIMIT 6)"
+    )
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    c = _find_check(rep, "T1-11")
+    assert c is not None and c.status == "fail"
+
+
+def test_t1_12_bs_pass_when_zero_deficit(tmp_path):
+    """_seed_healthy: rcept_no 있는 행(95개)은 모두 BS 채워짐 → pass."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    c = _find_check(rep, "T1-12")
+    assert c is not None and c.status == "pass"
+    # 분모는 rcept_no!='' 행만 (우선주 5종은 자동 제외)
+    assert "rcept_no 있음만" in c.detail
+
+
+def test_t1_12_bs_excludes_no_rcept_rows(tmp_path):
+    """rcept_no='' 행이 BS=0 이어도 fail로 잡지 않음 (구조적 결손 분리)."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    # _seed_healthy는 i<5 (5건)을 rcept_no='', BS=0으로 둔다.
+    # 분모(rcept_no!='') 95건 중 결손 0건이므로 0% pass.
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    c = _find_check(rep, "T1-12")
+    assert c.status == "pass"
+    assert "0/95" in c.detail
+
+
+def test_t1_12_bs_fail_when_real_parser_breakage(tmp_path):
+    """rcept_no!='' 인데 BS=0 인 종목이 5% 이상이면 fail (parser 회귀)."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    conn = sqlite3.connect(db)
+    # rcept_no 있는 95건 중 6건을 BS=0으로 만들어 6.3% → fail
+    conn.execute(
+        "UPDATE financial_metrics SET total_assets=0, total_equity=0 "
+        "WHERE rcept_no!='' AND stock_code IN ("
+        "  SELECT stock_code FROM financial_metrics "
+        "  WHERE rcept_no!='' LIMIT 6)"
+    )
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    c = _find_check(rep, "T1-12")
+    assert c is not None and c.status == "fail"
 
 
 if __name__ == "__main__":
