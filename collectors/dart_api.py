@@ -439,13 +439,22 @@ class DARTClient:
         metrics["capex"] = capex
 
         # === 전년도 데이터로 성장률 계산 (v2.0 신설) ===
+        # 2026-04-30: prev_revenue도 sector-aware 합산 분기 적용. 이전엔
+        # _calc_financial_revenue가 당기에만 적용되어 금융주 prev_revenue가
+        # 0으로 누적되던 stale 결손(125건/264 = 47%) 차단.
         prev_df = self.get_financial_statements(stock_code, year - 1)
         if prev_df is not None and not prev_df.empty:
-            prev_rev = self._get_account_value(
-                prev_df, "IS",
-                ["매출액", "매출", "수익(매출액)", "영업수익"],
-                account_ids=["ifrs-full_Revenue"],
+            prev_fin_rev = self._calc_financial_revenue(
+                prev_df, sector, stock_code,
             )
+            if prev_fin_rev is not None:
+                prev_rev = prev_fin_rev
+            else:
+                prev_rev = self._get_account_value(
+                    prev_df, "IS",
+                    ["매출액", "매출", "수익(매출액)", "영업수익"],
+                    account_ids=["ifrs-full_Revenue"],
+                )
             prev_op = self._get_account_value(
                 prev_df, "IS",
                 ["영업이익", "영업이익(손실)", "영업손익", "영업손실"],

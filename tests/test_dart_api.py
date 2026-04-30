@@ -538,3 +538,83 @@ def test_fcf_005440_hyundaigf_capex_corrected(client: DARTClient) -> None:
     assert ocf == 404603485000
     assert capex == 147603916000  # 기존엔 0
     assert fcf == ocf - capex
+
+
+# ================================================================
+# prev_revenue sector 분기 (2026-04-30 회복 PR)
+# 기존 prev_revenue 경로는 _calc_financial_revenue 호출 누락으로
+# 금융주 prev_revenue=0이 47% 누적. 분기 추가로 회복.
+# ================================================================
+def test_extract_prev_revenue_uses_financial_path_for_bank(
+    client: DARTClient, monkeypatch
+) -> None:
+    """sector='금융'+BANK 코드 전달 시 prev_revenue도 합산 매출 반환."""
+    # 당기 + 전기 동일 라벨 (분리 비교를 위해 금액만 다르게)
+    curr_df = pd.DataFrame([
+        _row("BS", "자산총계", "100"),
+        _row("BS", "자본총계", "10"),
+        _row("CIS", "이자수익", "27988801000000"),
+        _row("CIS", "수수료수익", "4564323000000"),
+        _row("CIS", "당기순이익(손실)", "5084519000000"),
+    ])
+    prev_df = pd.DataFrame([
+        _row("BS", "자산총계", "90"),
+        _row("BS", "자본총계", "9"),
+        _row("CIS", "이자수익", "20000000000000"),
+        _row("CIS", "수수료수익", "3000000000000"),
+        _row("CIS", "당기순이익(손실)", "4000000000000"),
+    ])
+
+    def fake_get(code, y):
+        return curr_df if y == 2025 else prev_df
+
+    monkeypatch.setattr(client, "get_financial_statements", fake_get)
+    metrics = client.extract_financial_metrics(
+        "055550", year=2025, sector="금융",
+    )
+    # 당기: 27.99T + 4.56T = 32.55T
+    assert metrics["revenue"] == 27988801000000 + 4564323000000
+    # 전기: 20T + 3T = 23T (sector 분기로 합산 — 핵심 검증)
+    assert metrics["prev_revenue"] == 20000000000000 + 3000000000000
+
+
+def test_extract_prev_revenue_uses_general_path_for_normal(
+    client: DARTClient, monkeypatch
+) -> None:
+    """일반 종목은 _calc_financial_revenue가 None을 반환해 일반 라벨로 fallback."""
+    curr_df = pd.DataFrame([
+        _row("CIS", "매출액", "100000"),
+    ])
+    prev_df = pd.DataFrame([
+        _row("CIS", "매출액", "80000"),
+    ])
+    curr_df.loc[0, "account_id"] = "ifrs-full_Revenue"
+    prev_df.loc[0, "account_id"] = "ifrs-full_Revenue"
+
+    def fake_get(code, y):
+        return curr_df if y == 2025 else prev_df
+
+    monkeypatch.setattr(client, "get_financial_statements", fake_get)
+    metrics = client.extract_financial_metrics(
+        "005930", year=2025, sector="전기·전자",
+    )
+    assert metrics["revenue"] == 100000
+    assert metrics["prev_revenue"] == 80000
+
+
+def test_extract_prev_revenue_handles_missing_sector(
+    client: DARTClient, monkeypatch
+) -> None:
+    """sector=None일 때도 일반 라벨로 prev_revenue 정상 추출 (회귀 방지)."""
+    curr_df = pd.DataFrame([_row("CIS", "매출액", "100000")])
+    prev_df = pd.DataFrame([_row("CIS", "매출액", "80000")])
+    curr_df.loc[0, "account_id"] = "ifrs-full_Revenue"
+    prev_df.loc[0, "account_id"] = "ifrs-full_Revenue"
+
+    def fake_get(code, y):
+        return curr_df if y == 2025 else prev_df
+
+    monkeypatch.setattr(client, "get_financial_statements", fake_get)
+    metrics = client.extract_financial_metrics("005930", year=2025)
+    assert metrics["revenue"] == 100000
+    assert metrics["prev_revenue"] == 80000
