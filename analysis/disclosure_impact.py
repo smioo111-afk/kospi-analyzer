@@ -193,8 +193,20 @@ def trigger_score_recalculation(
             logger.warning("캐시 무효화 실패 %s: %s", stock_code, e)
 
     # 2) 재수집
+    # 2026-04-30: sector 누락 시 _calc_financial_revenue가 None을 반환해
+    # 일반 매출 라벨로 fallback → 금융주(증권/은행지주) revenue=0 silent
+    # regression. 기존 financial_metrics 행의 sector 컬럼을 참조해 전달.
+    sector = None
     try:
-        metrics = dart_client.extract_financial_metrics(stock_code, year=year)
+        existing = db.get_financial_metrics(stock_code, year)
+        if existing:
+            sector = existing.get("sector") or None
+    except Exception as e:
+        logger.warning("기존 sector 조회 실패 %s: %s", stock_code, e)
+    try:
+        metrics = dart_client.extract_financial_metrics(
+            stock_code, year=year, sector=sector,
+        )
     except Exception as e:
         logger.warning("DART 재수집 실패 %s: %s", stock_code, e)
         return None

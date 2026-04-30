@@ -75,18 +75,23 @@ def refetch_one(
     Returns:
         dict: {stock_code, status, old_rcept, new_rcept, error}
     """
-    # 기존 rcept_no 조회 (변화 추적용)
+    # 기존 rcept_no + sector 조회 (변화 추적 + 금융주 매출 합산 분기)
+    # 2026-04-30: sector 누락 호출이 금융주 revenue를 0으로 덮어쓰던 silent
+    # regression 차단. 기존 row의 sector를 그대로 전달.
     conn = db._get_conn()
     row = conn.execute(
-        "SELECT rcept_no FROM financial_metrics "
+        "SELECT rcept_no, sector FROM financial_metrics "
         "WHERE stock_code=? AND year=? AND quarter='annual'",
         (stock_code, year),
     ).fetchone()
     old_rcept = row["rcept_no"] if row else ""
+    sector = (row["sector"] if row else None) or None
 
     invalidated = invalidate_cache(stock_code, year, cache_dir=cache_dir)
     try:
-        metrics = client.extract_financial_metrics(stock_code, year=year)
+        metrics = client.extract_financial_metrics(
+            stock_code, year=year, sector=sector,
+        )
     except Exception as e:
         return {
             "stock_code": stock_code,

@@ -549,10 +549,17 @@ class Database:
     # 재무 지표 캐시 (financial_metrics)
     # ================================================================
     def save_financial_metrics(self, metrics: dict[str, Any]) -> None:
-        """재무 지표를 DB에 저장(upsert)한다."""
+        """재무 지표를 DB에 저장(upsert)한다.
+
+        보존 가드: 신규 값이 0이고 기존 값이 0보다 큰 경우, 기존 값을
+        보존한다. 적용 컬럼 — revenue, operating_income, net_income,
+        prev_revenue, prev_operating_income, prev_net_income.
+        2026-04-30 silent regression(섹터 누락 호출이 0으로 덮어쓰던 버그)
+        후 재발 차단용. rcept_no/rcept_dt/updated_at은 항상 갱신.
+        """
         conn = self._get_conn()
         conn.execute(
-            """INSERT OR REPLACE INTO financial_metrics
+            """INSERT INTO financial_metrics
                (stock_code, year, quarter,
                 revenue, operating_income, net_income,
                 total_assets, total_liabilities, total_equity,
@@ -564,7 +571,49 @@ class Database:
                 consecutive_loss_years, consecutive_op_decline_years,
                 consecutive_revenue_decline_years, sector,
                 rcept_no, rcept_dt, updated_at)
-               VALUES (?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?, ?, ?,?,?)""",
+               VALUES (?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?, ?, ?,?,?)
+               ON CONFLICT(stock_code, year, quarter) DO UPDATE SET
+                 revenue = CASE
+                   WHEN excluded.revenue = 0 AND financial_metrics.revenue > 0
+                   THEN financial_metrics.revenue ELSE excluded.revenue END,
+                 operating_income = CASE
+                   WHEN excluded.operating_income = 0 AND financial_metrics.operating_income > 0
+                   THEN financial_metrics.operating_income ELSE excluded.operating_income END,
+                 net_income = CASE
+                   WHEN excluded.net_income = 0 AND financial_metrics.net_income > 0
+                   THEN financial_metrics.net_income ELSE excluded.net_income END,
+                 prev_revenue = CASE
+                   WHEN excluded.prev_revenue = 0 AND financial_metrics.prev_revenue > 0
+                   THEN financial_metrics.prev_revenue ELSE excluded.prev_revenue END,
+                 prev_operating_income = CASE
+                   WHEN excluded.prev_operating_income = 0 AND financial_metrics.prev_operating_income > 0
+                   THEN financial_metrics.prev_operating_income ELSE excluded.prev_operating_income END,
+                 prev_net_income = CASE
+                   WHEN excluded.prev_net_income = 0 AND financial_metrics.prev_net_income > 0
+                   THEN financial_metrics.prev_net_income ELSE excluded.prev_net_income END,
+                 total_assets = excluded.total_assets,
+                 total_liabilities = excluded.total_liabilities,
+                 total_equity = excluded.total_equity,
+                 current_assets = excluded.current_assets,
+                 current_liabilities = excluded.current_liabilities,
+                 roe = excluded.roe,
+                 operating_margin = excluded.operating_margin,
+                 debt_ratio = excluded.debt_ratio,
+                 current_ratio = excluded.current_ratio,
+                 dividend_yield = excluded.dividend_yield,
+                 revenue_growth_yoy = excluded.revenue_growth_yoy,
+                 op_income_growth_yoy = excluded.op_income_growth_yoy,
+                 ebitda = excluded.ebitda,
+                 free_cash_flow = excluded.free_cash_flow,
+                 cash_equivalents = excluded.cash_equivalents,
+                 depreciation = excluded.depreciation,
+                 consecutive_loss_years = excluded.consecutive_loss_years,
+                 consecutive_op_decline_years = excluded.consecutive_op_decline_years,
+                 consecutive_revenue_decline_years = excluded.consecutive_revenue_decline_years,
+                 sector = excluded.sector,
+                 rcept_no = excluded.rcept_no,
+                 rcept_dt = excluded.rcept_dt,
+                 updated_at = excluded.updated_at""",
             (
                 metrics.get("stock_code", ""),
                 metrics.get("year", 0),

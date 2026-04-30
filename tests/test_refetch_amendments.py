@@ -235,7 +235,7 @@ def test_refetch_apply_aggregates_results(tmp_path):
 
     fake_client = MagicMock()
 
-    def fake_extract(code, year=2025):
+    def fake_extract(code, year=2025, sector=None):
         if code == "000270":
             raise RuntimeError("not found")
         return {
@@ -278,6 +278,99 @@ def test_refetch_limit(tmp_path):
         db_path=str(db_path), limit=2,
     )
     assert stats["target"] == 2
+
+
+def test_refetch_one_passes_existing_sector_to_extract(tmp_path):
+    """2026-04-30 silent regression 차단: sector 필드를 extract_financial_metrics
+    에 전달해야 금융주 매출이 0으로 덮어쓰이지 않는다."""
+    db_path = tmp_path / "sector.db"
+    db = Database(db_path=str(db_path))
+    db.save_financial_metrics({
+        "stock_code": "105560", "year": 2025, "quarter": "annual",
+        "revenue": 47_306_167_000_000, "operating_income": 8_500_000_000_000,
+        "net_income": 5_840_000_000_000, "sector": "금융",
+        "rcept_no": "OLD",
+    })
+    cache = tmp_path / "cache"
+    _make_parquet(cache, "105560", 2025, "OLD")
+
+    captured: dict[str, object] = {}
+
+    def fake_extract(code, year=2025, sector=None):
+        captured["code"] = code
+        captured["sector"] = sector
+        return {
+            "stock_code": code, "year": year,
+            "rcept_no": "NEW", "rcept_dt": "20260430",
+            "revenue": 47_306_167_000_000,
+        }
+
+    fake_client = MagicMock()
+    fake_client.extract_financial_metrics = fake_extract
+    try:
+        refetch_one(fake_client, db, "105560", 2025, cache_dir=cache)
+    finally:
+        db.close()
+    assert captured["sector"] == "금융"
+
+
+def test_save_financial_metrics_preserves_revenue_when_new_zero(tmp_path):
+    """UPSERT 가드: 신규 revenue=0이고 기존 >0이면 기존 값을 보존한다."""
+    db = Database(db_path=str(tmp_path / "guard.db"))
+    try:
+        db.save_financial_metrics({
+            "stock_code": "105560", "year": 2025, "quarter": "annual",
+            "revenue": 47_306_167_000_000,
+            "operating_income": 8_500_000_000_000,
+            "net_income": 5_840_000_000_000,
+            "prev_revenue": 1_000, "prev_operating_income": 2_000,
+            "prev_net_income": 3_000,
+            "rcept_no": "OLD", "rcept_dt": "20260101",
+        })
+        # 두 번째 UPSERT: revenue=0 (silent regression 시뮬레이션). 기존 보존 기대.
+        db.save_financial_metrics({
+            "stock_code": "105560", "year": 2025, "quarter": "annual",
+            "revenue": 0, "operating_income": 0, "net_income": 0,
+            "prev_revenue": 0, "prev_operating_income": 0, "prev_net_income": 0,
+            "rcept_no": "NEW", "rcept_dt": "20260430",
+        })
+        row = db.get_financial_metrics("105560", 2025)
+    finally:
+        db.close()
+    assert row["revenue"] == 47_306_167_000_000
+    assert row["operating_income"] == 8_500_000_000_000
+    assert row["net_income"] == 5_840_000_000_000
+    assert row["prev_revenue"] == 1_000
+    assert row["prev_operating_income"] == 2_000
+    assert row["prev_net_income"] == 3_000
+    # rcept_no/rcept_dt는 항상 갱신
+    assert row["rcept_no"] == "NEW"
+    assert row["rcept_dt"] == "20260430"
+
+
+def test_save_financial_metrics_replaces_when_both_nonzero(tmp_path):
+    """UPSERT 가드는 정상 갱신에는 영향 없음 — 둘 다 nonzero면 신규 값 사용."""
+    db = Database(db_path=str(tmp_path / "replace.db"))
+    try:
+        db.save_financial_metrics({
+            "stock_code": "000660", "year": 2025, "quarter": "annual",
+            "revenue": 80_000_000_000_000,
+            "operating_income": 20_000_000_000_000,
+            "net_income": 15_000_000_000_000, "rcept_no": "V1",
+        })
+        db.save_financial_metrics({
+            "stock_code": "000660", "year": 2025, "quarter": "annual",
+            "revenue": 97_146_675_000_000,
+            "operating_income": 47_206_319_000_000,
+            "net_income": 42_947_902_000_000, "rcept_no": "V2",
+        })
+        row = db.get_financial_metrics("000660", 2025)
+    finally:
+        db.close()
+    assert row["revenue"] == 97_146_675_000_000
+    assert row["operating_income"] == 47_206_319_000_000
+    assert row["net_income"] == 42_947_902_000_000
+    assert row["rcept_no"] == "V2"
 
 
 if __name__ == "__main__":

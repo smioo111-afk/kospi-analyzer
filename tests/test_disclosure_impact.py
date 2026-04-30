@@ -553,5 +553,37 @@ def test_full_workflow_amendment_yields_expected_impact():
     assert imp.is_significant  # 5점 이상
 
 
+def test_recalculation_passes_existing_sector_to_dart():
+    """2026-04-30 silent regression 차단:
+    trigger_score_recalculation이 db.get_financial_metrics(code, year)에서
+    sector를 읽어 dart.extract_financial_metrics(sector=...) 로 전달해야 한다.
+    이게 누락되면 금융주 매출이 0으로 덮어쓰임."""
+    db = _mock_db_with_score(_full_score_row())
+    db.get_financial_metrics.return_value = {
+        "stock_code": "105560", "year": 2025, "sector": "금융",
+    }
+    dart = MagicMock()
+    dart.extract_financial_metrics.return_value = {
+        "stock_code": "105560", "rcept_no": "NEW",
+        "year": 2025, "sector": "금융",
+    }
+    scorer = MagicMock()
+    scorer.calculate_score.return_value = {
+        "stock_code": "105560", "stock_name": "KB금융",
+        "total_score": 60, "value_score": 18, "financial_score": 12,
+        "growth_score": 10, "momentum_score": 0, "quality_score": 9,
+        "penalties": 0,
+    }
+    trigger_score_recalculation(
+        db=db, dart_client=dart, scorer=scorer, stock_code="105560",
+        save_to_db=False,
+    )
+    # extract 호출 시 sector="금융" 이 전달되어야 한다
+    call = dart.extract_financial_metrics.call_args
+    assert call.kwargs.get("sector") == "금융", (
+        f"sector kwarg expected '금융', got {call.kwargs}"
+    )
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
