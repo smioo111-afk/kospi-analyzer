@@ -31,6 +31,12 @@ STOPLOSS_PROXIMITY_PCT = 3.0   # 손절가 대비 3% 이내면 차단
 WEEK52_HIGH_THRESHOLD = 85.0   # 52주 위치 85% 초과면 차단
 VALUE_TRAP_MOMENTUM_MAX = 5    # 모멘텀이 이보다 낮은 저평가 = 가치 함정
 
+# WATCH 임계치 — TOP 10이지만 적극 매수 보류
+BUY_SIGNALS = ("buy", "strong_buy")     # 이 외 신호는 BUY 자격 없음
+SUPPLY_STRONG_NEG = -5                  # 외국인/기관 5일 연속 매도 일수
+SUPPLY_BOTH_NEG = -3                    # 둘 다 동시 매도일 때 더 엄격
+RANK_DROP_THRESHOLD = -4                # 4계단 이상 하락 = 추세 약화
+
 
 def classify_buy_state(score: dict[str, Any]) -> BuyState:
     """3단계 분류.
@@ -81,7 +87,27 @@ def classify_buy_state(score: dict[str, Any]) -> BuyState:
     if is_undervalued and momentum < VALUE_TRAP_MOMENTUM_MAX:
         return BuyState.AVOID
 
-    # TOP 10 1차 필터 통과 + AVOID 5가지 모두 회피 → BUY
+    # === WATCH: TOP 10이나 적극 매수 보류 ===
+
+    # 6. 신호가 적극 매수가 아니면 WATCH (Hold 상태에서는 적극 매수 X)
+    signal = score.get("signal", "")
+    if signal not in BUY_SIGNALS:
+        return BuyState.WATCH
+
+    # 7. 수급 강한 매도 추세
+    foreign_5d = score.get("foreign_net_buy_5d", 0) or 0
+    inst_5d = score.get("institutional_net_buy_5d", 0) or 0
+    if foreign_5d <= SUPPLY_STRONG_NEG or inst_5d <= SUPPLY_STRONG_NEG:
+        return BuyState.WATCH
+    if foreign_5d <= SUPPLY_BOTH_NEG and inst_5d <= SUPPLY_BOTH_NEG:
+        return BuyState.WATCH
+
+    # 8. 점수 급락 (rank_change는 main.py가 prev_top_10에서 계산해 주입)
+    rank_change = score.get("rank_change")
+    if rank_change is not None and rank_change <= RANK_DROP_THRESHOLD:
+        return BuyState.WATCH
+
+    # TOP 10 + 모든 차단 회피 + 적극 매수 신호 + 수급/추세 안정 → BUY
     return BuyState.BUY
 
 
@@ -150,8 +176,8 @@ def get_state_label(state: BuyState) -> str:
 
 
 def get_state_reason(state: BuyState, score: dict[str, Any]) -> str:
-    """AVOID 사유. BUY/WATCH는 빈 문자열."""
-    if state != BuyState.AVOID:
+    """AVOID/WATCH 사유. BUY는 빈 문자열."""
+    if state == BuyState.BUY:
         return ""
 
     cp = score.get("current_price", 0) or 0
@@ -162,16 +188,32 @@ def get_state_reason(state: BuyState, score: dict[str, Any]) -> str:
     fair_low = score.get("fair_value_low", 0) or 0
     fair_mid = (fair_low + fair_high) / 2 if fair_low > 0 else fair_high
 
-    if cp <= 0 or fair_high <= 0:
-        return "데이터 부족"
-    if score.get("signal") == "sell":
-        return "매도 신호"
-    if cp > fair_high:
-        return "고평가"
-    if sl_price > 0 and (cp - sl_price) / cp * 100 < STOPLOSS_PROXIMITY_PCT:
-        return "손절 근접"
-    if week52_pos > WEEK52_HIGH_THRESHOLD:
-        return "52주 고점"
-    if cp <= fair_mid and momentum < VALUE_TRAP_MOMENTUM_MAX:
-        return "가치 함정"
+    if state == BuyState.AVOID:
+        if cp <= 0 or fair_high <= 0:
+            return "데이터 부족"
+        if score.get("signal") == "sell":
+            return "매도 신호"
+        if cp > fair_high:
+            return "고평가"
+        if sl_price > 0 and (cp - sl_price) / cp * 100 < STOPLOSS_PROXIMITY_PCT:
+            return "손절 근접"
+        if week52_pos > WEEK52_HIGH_THRESHOLD:
+            return "52주 고점"
+        if cp <= fair_mid and momentum < VALUE_TRAP_MOMENTUM_MAX:
+            return "가치 함정"
+        return ""
+
+    # WATCH 사유
+    signal = score.get("signal", "")
+    if signal not in BUY_SIGNALS:
+        return f"신호 {signal or '미정'}"
+    foreign_5d = score.get("foreign_net_buy_5d", 0) or 0
+    inst_5d = score.get("institutional_net_buy_5d", 0) or 0
+    if foreign_5d <= SUPPLY_STRONG_NEG or inst_5d <= SUPPLY_STRONG_NEG:
+        return "수급 매도 추세"
+    if foreign_5d <= SUPPLY_BOTH_NEG and inst_5d <= SUPPLY_BOTH_NEG:
+        return "수급 동반 매도"
+    rank_change = score.get("rank_change")
+    if rank_change is not None and rank_change <= RANK_DROP_THRESHOLD:
+        return f"순위 {rank_change}계단 하락"
     return ""

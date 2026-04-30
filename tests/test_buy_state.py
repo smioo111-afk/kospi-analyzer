@@ -21,14 +21,19 @@ from analysis.buy_state import (  # noqa: E402
 
 
 def _score(**kw) -> dict:
-    """기본값: BUY 분류되는 정상 종목 (TOP 10 통과 가정)."""
+    """기본값: BUY 분류되는 정상 종목 (TOP 10 통과 가정).
+
+    분류 통과를 위해 signal="buy" + 수급 양호 + rank_change 0.
+    """
     base = {
         "stock_code": "005930", "stock_name": "삼성전자",
         "current_price": 70000,
         "fair_value_low": 80000, "fair_value_high": 100000,
-        "signal": "hold", "stoploss_price": 65000,
+        "signal": "buy", "stoploss_price": 65000,
         "momentum_score": 12, "total_score": 60,
         "week52_position": 50,
+        "foreign_net_buy_5d": 0, "institutional_net_buy_5d": 0,
+        "rank_change": 0,
     }
     base.update(kw)
     return base
@@ -101,6 +106,82 @@ def test_classify_buy_top_10_passes_filter():
         current_price=85000,  # fair_low~fair_high 사이
         momentum_score=8,
         week52_position=60,
+    )) == BuyState.BUY
+
+
+# -------------------------------------------------------------------
+# WATCH (TOP 10이지만 적극 매수 보류)
+# -------------------------------------------------------------------
+def test_classify_watch_when_signal_is_hold():
+    """hold 신호는 적극 매수 X → WATCH."""
+    assert classify_buy_state(_score(signal="hold")) == BuyState.WATCH
+
+
+def test_classify_strong_buy_passes_to_buy():
+    """strong_buy도 BUY 자격."""
+    assert classify_buy_state(_score(signal="strong_buy")) == BuyState.BUY
+
+
+def test_classify_watch_when_foreign_strong_negative():
+    """외국인 5일 연속 매도(-5) → WATCH."""
+    assert classify_buy_state(
+        _score(signal="buy", foreign_net_buy_5d=-5)
+    ) == BuyState.WATCH
+
+
+def test_classify_watch_when_institution_strong_negative():
+    """기관 5일 연속 매도(-5) → WATCH."""
+    assert classify_buy_state(
+        _score(signal="buy", institutional_net_buy_5d=-5)
+    ) == BuyState.WATCH
+
+
+def test_classify_watch_when_both_supply_negative():
+    """외국인 -3 + 기관 -3 동반 매도 → WATCH."""
+    assert classify_buy_state(_score(
+        signal="buy",
+        foreign_net_buy_5d=-3, institutional_net_buy_5d=-3,
+    )) == BuyState.WATCH
+
+
+def test_classify_buy_when_only_one_supply_mildly_negative():
+    """한 쪽만 -3은 차단 안 됨 (둘 다여야 차단)."""
+    assert classify_buy_state(_score(
+        signal="buy",
+        foreign_net_buy_5d=-3, institutional_net_buy_5d=0,
+    )) == BuyState.BUY
+
+
+def test_classify_watch_when_rank_dropped_4_plus():
+    """순위 4계단 이상 하락 → WATCH."""
+    assert classify_buy_state(
+        _score(signal="buy", rank_change=-4)
+    ) == BuyState.WATCH
+    assert classify_buy_state(
+        _score(signal="buy", rank_change=-7)
+    ) == BuyState.WATCH
+
+
+def test_classify_buy_when_rank_dropped_3():
+    """3계단 하락은 차단 안 됨."""
+    assert classify_buy_state(
+        _score(signal="buy", rank_change=-3)
+    ) == BuyState.BUY
+
+
+def test_classify_buy_when_rank_change_missing():
+    """rank_change 키 자체가 없으면(신규 진입) 판정 skip → BUY."""
+    s = _score(signal="buy")
+    s.pop("rank_change", None)
+    assert classify_buy_state(s) == BuyState.BUY
+
+
+def test_classify_buy_normal_with_buy_signal_good_supply():
+    """모든 조건 통과: buy 신호 + 수급 양호 + 순위 안정 → BUY."""
+    assert classify_buy_state(_score(
+        signal="buy",
+        foreign_net_buy_5d=2, institutional_net_buy_5d=1,
+        rank_change=1,
     )) == BuyState.BUY
 
 
@@ -225,4 +306,16 @@ def test_state_reason_avoid_provides_reason():
 
 def test_state_reason_buy_returns_empty():
     assert get_state_reason(BuyState.BUY, _score()) == ""
-    assert get_state_reason(BuyState.WATCH, _score()) == ""
+
+
+def test_state_reason_watch_provides_reason():
+    # signal=hold → WATCH "신호 hold"
+    s = _score(signal="hold")
+    assert get_state_reason(BuyState.WATCH, s) == "신호 hold"
+    # 수급 강한 매도 → WATCH "수급 매도 추세"
+    s2 = _score(signal="buy", foreign_net_buy_5d=-5)
+    assert get_state_reason(BuyState.WATCH, s2) == "수급 매도 추세"
+    # 순위 급락
+    s3 = _score(signal="buy", rank_change=-5)
+    assert "4계단" in get_state_reason(BuyState.WATCH, s3) or \
+           "5계단" in get_state_reason(BuyState.WATCH, s3)

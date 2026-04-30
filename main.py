@@ -400,13 +400,19 @@ class AnalysisPipeline:
                 classify_buy_state, calculate_buy_score,
                 get_state_label, get_state_reason,
             )
-            for stock in top_10:
+            # 전일 TOP 10에서 rank_change 계산 (분류기에서 점수 급락 판정에 사용)
+            prev_rank_map = {
+                s.get("stock_code", ""): idx + 1
+                for idx, s in enumerate(prev_top_10 or [])
+            }
+            for idx, stock in enumerate(top_10):
                 code = stock.get("stock_code", "")
-                # stoploss_map에서 effective_stoploss를 score dict에 주입
-                # (분류기는 stoploss_price 키를 봄)
                 sl = stoploss_map.get(code, {})
                 if sl.get("effective_stoploss", 0) and not stock.get("stoploss_price"):
                     stock["stoploss_price"] = sl["effective_stoploss"]
+                # rank_change: 양수=상승, 음수=하락. 신규 진입은 None (판정 skip)
+                if code in prev_rank_map:
+                    stock["rank_change"] = prev_rank_map[code] - (idx + 1)
                 history = self.db.get_stock_history(code, days=5)
                 state = classify_buy_state(stock)
                 stock["buy_state"] = state.value

@@ -571,6 +571,7 @@ class MessageFormatter:
         AVOID: 사유별로 묶어 표기.
         """
         buys = [s for s in top_10 if s.get("buy_state") == "buy"]
+        watches = [s for s in top_10 if s.get("buy_state") == "watch"]
         avoids = [s for s in top_10 if s.get("buy_state") == "avoid"]
 
         lines: list[str] = []
@@ -593,6 +594,17 @@ class MessageFormatter:
                 lines.append(line)
                 if reason:
                     lines.append(f"   사유: {reason}")
+
+        if watches:
+            lines.append("")
+            lines.append("🟡 관망 (적극 매수 보류)")
+            for s in watches:
+                code = s.get("stock_code", "")
+                name = s.get("stock_name", "")
+                reason = s.get("buy_state_reason") or "조건 미달"
+                lines.append(
+                    f"- {self._format_name_code(name, code)}: {reason}"
+                )
 
         if avoids:
             lines.append("")
