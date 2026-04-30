@@ -22,17 +22,9 @@ KOSPI 저평가 기업 분석 시스템.
 - 크기: ~22.5KB (476 라인)
 - 내용: 모듈별 시그니처 + 핵심 로직 + 임계값 + 운영 흐름 + 알려진 한계
 
-### 원격 저장소 (사용자가 등록 후 갱신)
+### 원격 저장소
 
-raw URL: **TBD** — git remote 등록 후 갱신 필요
-
-원격 등록 절차 (사용자가 직접 실행):
-```
-git remote add origin <repo-url>
-git push -u origin main
-```
-
-이후 raw URL 형식: `https://raw.githubusercontent.com/{owner}/{repo}/main/docs/project_summary.md`
+raw URL: `https://raw.githubusercontent.com/smioo111-afk/kospi-analyzer/main/docs/project_summary.md`
 
 채팅 Claude 사용 시: 위 URL을 web_fetch로 호출하면 최신 요약 확인.
 
