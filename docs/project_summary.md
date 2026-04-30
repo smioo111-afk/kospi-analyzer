@@ -474,3 +474,5 @@ chart 없이 scorer 호출 → stoploss/ATR 0 산출. 직전 양수 값을 stopl
 - 7월~: v2 RealtimePriceProvider
 - 8월~: v3 KIS 모의 (MockOrderExecutor)
 - 검증 후: v4 LiveOrderExecutor
+
+Last verified: 2026-05-01
