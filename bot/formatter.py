@@ -540,6 +540,7 @@ class MessageFormatter:
         portfolio: list[dict[str, Any]],
         scores_map: Optional[dict[str, dict[str, Any]]] = None,
         stoploss_map: Optional[dict[str, dict[str, Any]]] = None,
+        previous_prices: Optional[dict[str, int]] = None,
     ) -> str:
         """포트폴리오 현황을 포맷팅한다.
 
@@ -549,6 +550,7 @@ class MessageFormatter:
             portfolio: 종목별 포트폴리오 리스트
             scores_map: {종목코드: 최신 스코어 데이터}
             stoploss_map: {종목코드: 손절 정보}
+            previous_prices: {종목코드: 직전 영업일 종가} — 전일 대비 표시용
         """
         if not portfolio:
             return (
@@ -561,11 +563,14 @@ class MessageFormatter:
             scores_map = {}
         if stoploss_map is None:
             stoploss_map = {}
+        if previous_prices is None:
+            previous_prices = {}
 
         lines = ["💼 내 포트폴리오", ""]
 
         total_invested = 0
         total_current = 0
+        total_prev_value = 0
 
         for p in portfolio:
             code = p["stock_code"]
@@ -574,27 +579,39 @@ class MessageFormatter:
             qty = p["total_quantity"]
             invested = p["total_invested"]
 
-            # 최신 스코어에서 현재가 가져오기
             score = scores_map.get(code, {})
             current_price = score.get("current_price", 0)
             signal_label = score.get("signal_label", "")
             total_score = score.get("total_score", 0)
 
-            # 현재가가 없으면 매수가 기준
             if current_price <= 0:
                 current_price = avg_price
+
+            prev_price = previous_prices.get(code, 0)
 
             current_value = current_price * qty
             pnl = current_value - invested
             pnl_pct = (pnl / invested * 100) if invested > 0 else 0
             pnl_emoji = "📈" if pnl >= 0 else "📉"
 
+            if prev_price > 0:
+                daily_change = current_price - prev_price
+                daily_pct = (daily_change / prev_price * 100)
+                daily_sign = "+" if daily_change >= 0 else ""
+                daily_emoji = "📈" if daily_change >= 0 else "📉"
+                total_prev_value += prev_price * qty
+            else:
+                daily_change = 0
+                daily_pct = 0.0
+                daily_sign = ""
+                daily_emoji = ""
+                total_prev_value += current_value
+
             total_invested += invested
             total_current += current_value
 
             lines.append(f"┌ {self._format_name_code(name, code)}")
 
-            # 추가 매수 이력 표시
             if p["buy_count"] > 1:
                 lines.append(f"│ 매수 {p['buy_count']}회 (평단: {avg_price:,}원)")
                 for lot in p["lots"]:
@@ -606,33 +623,54 @@ class MessageFormatter:
 
             lines.append(f"│ 현재: {current_price:,}원 × {qty}주 = {current_value:,}원")
 
+            if prev_price > 0 and daily_change != 0:
+                lines.append(
+                    f"│ 전일대비: {daily_sign}{daily_change:,}원 "
+                    f"({daily_sign}{daily_pct:.2f}%) {daily_emoji}"
+                )
+
             sign = "+" if pnl >= 0 else ""
             lines.append(f"│ 손익: {sign}{pnl:,}원 ({sign}{pnl_pct:.1f}%) {pnl_emoji}")
 
             if signal_label:
                 lines.append(f"│ 신호: {signal_label} ({total_score}점)")
 
-            # 손절라인 경고
             sl = stoploss_map.get(code, {})
             sl_price = sl.get("effective_stoploss", 0)
             if sl_price > 0 and current_price > 0:
                 sl_pct = sl.get("effective_stoploss_pct", 0)
                 lines.append(f"│ 손절: {sl_price:,}원 ({sl_pct}%)")
-                if current_price <= sl_price * 1.02:  # 손절 2% 이내
+                if current_price <= sl_price * 1.02:
                     lines.append(f"│ ⚠️ 손절라인 접근 주의!")
 
             lines.append("└──────────────")
             lines.append("")
 
-        # 합계
         total_pnl = total_current - total_invested
         total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0
         sign = "+" if total_pnl >= 0 else ""
+        total_pnl_emoji = "📈" if total_pnl >= 0 else "📉"
+
+        total_daily_change = total_current - total_prev_value
+        total_daily_pct = (
+            (total_daily_change / total_prev_value * 100) if total_prev_value > 0 else 0
+        )
+        total_daily_sign = "+" if total_daily_change >= 0 else ""
+        total_daily_emoji = "📈" if total_daily_change >= 0 else "📉"
 
         lines.append(f"📊 합계")
         lines.append(f"   투자: {total_invested:,}원")
         lines.append(f"   평가: {total_current:,}원")
-        lines.append(f"   손익: {sign}{total_pnl:,}원 ({sign}{total_pnl_pct:.1f}%)")
+        lines.append(
+            f"   손익: {sign}{total_pnl:,}원 "
+            f"({sign}{total_pnl_pct:.1f}%) {total_pnl_emoji}"
+        )
+
+        if total_prev_value > 0 and total_daily_change != 0:
+            lines.append(
+                f"   전일대비: {total_daily_sign}{total_daily_change:,}원 "
+                f"({total_daily_sign}{total_daily_pct:.2f}%) {total_daily_emoji}"
+            )
 
         return "\n".join(lines)
 
@@ -641,8 +679,9 @@ class MessageFormatter:
         portfolio: list[dict[str, Any]],
         scores_map: Optional[dict[str, dict[str, Any]]] = None,
         stoploss_map: Optional[dict[str, dict[str, Any]]] = None,
+        previous_prices: Optional[dict[str, int]] = None,
     ) -> Optional[str]:
-        """일일 리포트에 포함할 간략 포트폴리오를 포맷팅한다."""
+        """일일 리포트에 포함할 상세 포트폴리오 (박스 형식 + 전일 대비)."""
         if not portfolio:
             return None
 
@@ -650,17 +689,19 @@ class MessageFormatter:
             scores_map = {}
         if stoploss_map is None:
             stoploss_map = {}
+        if previous_prices is None:
+            previous_prices = {}
+
+        lines: list[str] = [f"💼 내 포트폴리오 ({len(portfolio)}종목)", ""]
 
         total_invested = 0
         total_current = 0
-        stock_lines: list[str] = []
+        total_prev_value = 0
         warning_lines: list[str] = []
 
         for p in portfolio:
             code = p["stock_code"]
             name = p.get("stock_name") or ""
-            # 종목명이 비어있으면 stock_master 테이블에서 lookup해 보강.
-            # (포트폴리오 테이블의 historical row 일부에 stock_name이 누락된 경우 대응)
             if not name and self._db is not None:
                 name = self._db.get_stock_name(code)
             display = self._format_name_code(name, code)
@@ -675,39 +716,99 @@ class MessageFormatter:
             signal_label = score.get("signal_label", "")
             total_score = score.get("total_score", 0)
 
+            prev_price = previous_prices.get(code, 0)
+
             current_value = current_price * qty
             pnl = current_value - invested
             pnl_pct = (pnl / invested * 100) if invested > 0 else 0
-            sign = "+" if pnl >= 0 else ""
-            emoji = "📈" if pnl >= 0 else "📉"
+            pnl_sign = "+" if pnl >= 0 else ""
+            pnl_emoji = "📈" if pnl >= 0 else "📉"
+
+            if prev_price > 0:
+                daily_change = current_price - prev_price
+                daily_pct = (daily_change / prev_price * 100)
+                daily_sign = "+" if daily_change >= 0 else ""
+                daily_emoji = "📈" if daily_change >= 0 else "📉"
+                total_prev_value += prev_price * qty
+            else:
+                daily_change = 0
+                daily_pct = 0.0
+                daily_sign = ""
+                daily_emoji = ""
+                # 전일 데이터가 없으면 합계 변화에서 제외(현재가로 처리)
+                total_prev_value += current_value
 
             total_invested += invested
             total_current += current_value
 
-            buy_label = f"(평단 {avg_price:,})" if p["buy_count"] > 1 else f"({avg_price:,})"
-            stock_lines.append(
-                f"   {display} {buy_label} × {qty}주 → {sign}{pnl_pct:.1f}% {emoji} {signal_label}"
+            lines.append(f"┌ {display}")
+
+            if p.get("buy_count", 1) > 1:
+                lines.append(f"│ 매수 {p['buy_count']}회 (평단: {avg_price:,}원)")
+            else:
+                lines.append(
+                    f"│ 매수: {avg_price:,}원 × {qty}주 = {invested:,}원"
+                )
+
+            lines.append(
+                f"│ 현재: {current_price:,}원 × {qty}주 = {current_value:,}원"
             )
 
-            # 손절 접근 경고
+            if prev_price > 0 and daily_change != 0:
+                lines.append(
+                    f"│ 전일대비: {daily_sign}{daily_change:,}원 "
+                    f"({daily_sign}{daily_pct:.2f}%) {daily_emoji}"
+                )
+
+            lines.append(
+                f"│ 손익: {pnl_sign}{pnl:,}원 "
+                f"({pnl_sign}{pnl_pct:.1f}%) {pnl_emoji}"
+            )
+
+            if signal_label:
+                lines.append(f"│ 신호: {signal_label} ({total_score}점)")
+
             sl = stoploss_map.get(code, {})
             sl_price = sl.get("effective_stoploss", 0)
-            if sl_price > 0 and current_price <= sl_price * 1.02:
-                warning_lines.append(f"   ⚠️ {display}: 손절라인 접근!")
+            if sl_price > 0:
+                sl_pct = sl.get("effective_stoploss_pct", 0)
+                lines.append(f"│ 손절: {sl_price:,}원 ({sl_pct}%)")
+                if current_price <= sl_price * 1.02:
+                    warning_lines.append(f"⚠️ {display}: 손절라인 접근 주의")
 
-            # 매도 신호 경고
             if score.get("signal") == "sell":
-                warning_lines.append(f"   🔴 {display}: 매도 신호 ({total_score}점)")
+                warning_lines.append(f"🔴 {display}: 매도 신호 ({total_score}점)")
+
+            lines.append("└──────────────")
+            lines.append("")
 
         total_pnl = total_current - total_invested
-        total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0
-        sign = "+" if total_pnl >= 0 else ""
+        total_pnl_pct = (
+            (total_pnl / total_invested * 100) if total_invested > 0 else 0
+        )
+        total_pnl_sign = "+" if total_pnl >= 0 else ""
+        total_pnl_emoji = "📈" if total_pnl >= 0 else "📉"
 
-        lines = [
-            f"💼 내 포트폴리오 ({len(portfolio)}종목)",
-        ]
-        lines.extend(stock_lines)
-        lines.append(f"   합계: {sign}{total_pnl:,}원 ({sign}{total_pnl_pct:.1f}%)")
+        total_daily_change = total_current - total_prev_value
+        total_daily_pct = (
+            (total_daily_change / total_prev_value * 100) if total_prev_value > 0 else 0
+        )
+        total_daily_sign = "+" if total_daily_change >= 0 else ""
+        total_daily_emoji = "📈" if total_daily_change >= 0 else "📉"
+
+        lines.append("📊 합계")
+        lines.append(f"   투자: {total_invested:,}원")
+        lines.append(f"   평가: {total_current:,}원")
+        lines.append(
+            f"   손익: {total_pnl_sign}{total_pnl:,}원 "
+            f"({total_pnl_sign}{total_pnl_pct:.1f}%) {total_pnl_emoji}"
+        )
+
+        if total_prev_value > 0 and total_daily_change != 0:
+            lines.append(
+                f"   전일대비: {total_daily_sign}{total_daily_change:,}원 "
+                f"({total_daily_sign}{total_daily_pct:.2f}%) {total_daily_emoji}"
+            )
 
         if warning_lines:
             lines.append("")

@@ -525,15 +525,19 @@ class KOSPIBot:
         # 포트폴리오 조회
         portfolio = self.db.get_portfolio()
 
-        # 최신 스코어 매핑
+        # 최신 스코어 + 전일 종가 매핑
         scores_map: dict[str, dict[str, Any]] = {}
+        previous_prices: dict[str, int] = {}
         for p in portfolio:
             code = p["stock_code"]
             score = self.db.get_stock_score(code)
             if score:
                 scores_map[code] = score
+            previous_prices[code] = self.db.get_previous_price(code)
 
-        msg = self.formatter.format_portfolio(portfolio, scores_map)
+        msg = self.formatter.format_portfolio(
+            portfolio, scores_map, previous_prices=previous_prices,
+        )
         await update.message.reply_text(msg)
 
     # ================================================================
@@ -582,6 +586,7 @@ class KOSPIBot:
         portfolio_scores_map: Optional[dict[str, dict[str, Any]]] = None,
         scored_list: Optional[list[dict[str, Any]]] = None,
         disclosure_impacts: Optional[list[Any]] = None,
+        previous_prices: Optional[dict[str, int]] = None,
     ) -> bool:
         """일일 분석 리포트를 자동 발송한다.
 
@@ -648,8 +653,18 @@ class KOSPIBot:
                         if score:
                             scores_map[code] = score
 
+                # 전일 가격: main.py에서 전달받거나 DB에서 일괄 조회
+                if previous_prices is None:
+                    previous_prices = {
+                        p["stock_code"]: self.db.get_previous_price(p["stock_code"])
+                        for p in portfolio
+                    }
+
                 pf_msg = self.formatter.format_portfolio_for_report(
-                    portfolio, scores_map, stoploss_map
+                    portfolio,
+                    scores_map=scores_map,
+                    stoploss_map=stoploss_map,
+                    previous_prices=previous_prices,
                 )
                 if pf_msg:
                     await bot.send_message(

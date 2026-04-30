@@ -388,6 +388,13 @@ class AnalysisPipeline:
                         logger.warning(
                             "포트폴리오 종목 %s 스코어링 실패: %s", code, e)
 
+            # 포트폴리오 종목별 전일 종가 조회 (전일 대비 표시용)
+            previous_prices: dict[str, int] = {}
+            if portfolio:
+                for p in portfolio:
+                    code = p["stock_code"]
+                    previous_prices[code] = self.db.get_previous_price(code)
+
             # 9. 텔레그램 발송
             await self.bot.send_daily_report(
                 top_10=top_10,
@@ -397,6 +404,7 @@ class AnalysisPipeline:
                 prev_top_10=prev_top_10,
                 portfolio_scores_map=portfolio_scores_map,
                 scored_list=scored_list,
+                previous_prices=previous_prices,
             )
 
             # 신호 변경 알림

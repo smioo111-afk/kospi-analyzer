@@ -545,6 +545,41 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_previous_price(self, stock_code: str) -> int:
+        """직전 영업일(또는 최근) 종가를 조회한다.
+
+        포트폴리오 전일 대비 표시에 사용. 우선순위:
+          1. stock_scores 에서 오늘 이전 가장 최근 analysis_date의 current_price
+             (포트폴리오 종목은 TOP 10에 없을 수 있어 daily_report_log보다 커버리지 큼)
+          2. daily_report_log 에서 오늘 이전 가장 최근 report_date의 current_price
+          3. 0 (조회 실패 — 호출자는 0이면 전일 대비를 표시하지 않음)
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            """SELECT current_price FROM stock_scores
+               WHERE stock_code = ?
+                 AND analysis_date < date('now', 'localtime')
+                 AND current_price > 0
+               ORDER BY analysis_date DESC
+               LIMIT 1""",
+            (stock_code,),
+        ).fetchone()
+        if row and row[0]:
+            return int(row[0])
+
+        row = conn.execute(
+            """SELECT current_price FROM daily_report_log
+               WHERE stock_code = ?
+                 AND report_date < date('now', 'localtime')
+                 AND current_price > 0
+               ORDER BY report_date DESC
+               LIMIT 1""",
+            (stock_code,),
+        ).fetchone()
+        if row and row[0]:
+            return int(row[0])
+        return 0
+
     # ================================================================
     # 재무 지표 캐시 (financial_metrics)
     # ================================================================
