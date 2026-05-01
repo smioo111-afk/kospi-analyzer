@@ -1,4 +1,4 @@
-"""포맷터: 매수상태 라인 + 매수 추천 섹션 테스트."""
+"""포맷터: TOP10 표시 + 매수 추천 섹션 테스트."""
 
 from __future__ import annotations
 
@@ -33,27 +33,25 @@ def _stock(**kw) -> dict:
 
 
 # -------------------------------------------------------------------
-# _format_stock_entry — 매수상태 라인
+# _format_stock_entry — 매수상태 라인은 TOP10에서 미출력 (추천 섹션 전용)
 # -------------------------------------------------------------------
-def test_format_top_includes_buy_state_line(fmt):
+def test_format_top_omits_buy_state_line_even_when_buy(fmt):
     s = _stock(buy_state="buy", buy_state_label="🟢 BUY", buy_score=65.05)
     out = fmt._format_stock_entry("1️⃣", s, {}, current_rank=1, prev_map={})
-    assert "매수상태: 🟢 BUY" in out
-    assert "buy_score: 65.05" in out
+    assert "매수상태:" not in out
 
 
-def test_format_top_buy_state_label_avoid_with_reason(fmt):
+def test_format_top_omits_buy_state_line_even_when_avoid(fmt):
     s = _stock(
         buy_state="avoid", buy_state_label="🔴 AVOID",
         buy_score=20.0, buy_state_reason="52주 고점",
     )
     out = fmt._format_stock_entry("1️⃣", s, {}, current_rank=1, prev_map={})
-    assert "매수상태: 🔴 AVOID" in out
-    assert "52주 고점" in out
+    assert "매수상태:" not in out
 
 
 def test_format_top_no_buy_state_field_skipped(fmt):
-    """buy_state 필드 없으면 매수상태 라인 미출력 (기존 호환)."""
+    """buy_state 필드 없어도 매수상태 라인 미출력."""
     s = _stock()
     out = fmt._format_stock_entry("1️⃣", s, {}, current_rank=1, prev_map={})
     assert "매수상태:" not in out

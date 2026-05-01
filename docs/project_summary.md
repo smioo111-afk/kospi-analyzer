@@ -309,8 +309,8 @@ RANK_DROP_THRESHOLD = -4         # 4계단 이상 하락
   - 분할 발송 (`MAX_MESSAGE_LENGTH=4000`, `_split_messages`)
   - 섹션: TOP 10 → 모멘텀 TOP 10 (보조) → 공시 영향 → **매수 추천/관망/회피** (top_10에 buy_state 있을 때) → 경고 → 탈락 → 시장 요약
 - `_format_stock_entry(emoji, stock, stoploss_map, current_rank, prev_map)`: 종목 항목
-  - `매수상태: 🟢 BUY (buy_score: 65.05)` 라인 (buy_state_label 있을 때만)
-  - 적정주가 / 손절라인 / 수급 / 사유
+  - 종합점수 / 신호 / PER·PBR·ROE / 현재가 / 적정주가 / 손절라인 / 수급 / 사유
+  - 매수상태 라인은 출력하지 않음 — 매수 분류는 `format_buy_recommendations`의 추천 섹션 전용
 - `format_buy_recommendations(top_10) -> str`:
   - 🎯 매수 가능 종목 (BUY, buy_score 정렬)
   - 🟡 관망 (WATCH)

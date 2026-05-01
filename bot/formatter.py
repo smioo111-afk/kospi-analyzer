@@ -257,28 +257,9 @@ class MessageFormatter:
         lines = [
             f"{emoji} {self._format_name_code(name, code)}{change_str}",
             f"   종합점수: {total}/100 | 신호: {signal}",
-        ]
-
-        # 단계 1: 매수 상태 라인 (buy_state 필드가 있을 때만)
-        buy_state_label = stock.get("buy_state_label", "")
-        if buy_state_label:
-            buy_score_val = stock.get("buy_score", 0)
-            reason_text = stock.get("buy_state_reason", "")
-            if reason_text:
-                lines.append(
-                    f"   매수상태: {buy_state_label} "
-                    f"(buy_score: {buy_score_val:.2f}, {reason_text})"
-                )
-            else:
-                lines.append(
-                    f"   매수상태: {buy_state_label} "
-                    f"(buy_score: {buy_score_val:.2f})"
-                )
-
-        lines.extend([
             f"   PER: {per} | PBR: {pbr} | ROE: {roe}%",
             f"   현재가: {price:,}원",
-        ])
+        ]
 
         # 적정주가
         fair_low = stock.get("fair_value_low", 0)
