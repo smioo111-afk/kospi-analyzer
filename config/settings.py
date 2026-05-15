@@ -61,49 +61,53 @@ class TelegramConfig:
 
 
 class ScoringConfig:
-    """종합 스코어링 기준 100점 만점 (v3.0).
+    """종합 스코어링 기준 100점 만점 (v3.1).
 
-    가치(30) + 재무(20) + 성장성(20) + 모멘텀(20) + 퀄리티(10) = 100
+    가치(20) + 재무(20) + 성장성(20) + 모멘텀(30) + 퀄리티(10) = 100
+
+    v3.1 변경:
+      - 가치 30→20, 모멘텀 20→30 (떨어지는 칼날 차단 + 추세 강화)
+      - 하위 항목 max 점수 비례 축소/확대
 
     v3.0 신규 지표:
-      가치: PEG(5), EV/EBITDA(5), PSR(3) 추가
-      모멘텀: 52주 위치(3) 추가
-      퀄리티: FCF 수익률(5) + FCF 마진(5) 신설
+      가치: PEG, EV/EBITDA, PSR 추가
+      모멘텀: 52주 위치 추가
+      퀄리티: FCF 수익률 + FCF 마진 신설
     """
 
-    # === 카테고리 비중 ===
-    WEIGHT_VALUE: int = 30
+    # === 카테고리 비중 (v3.1) ===
+    WEIGHT_VALUE: int = 20
     WEIGHT_FINANCIAL: int = 20
     WEIGHT_GROWTH: int = 20
-    WEIGHT_MOMENTUM: int = 20
-    WEIGHT_QUALITY: int = 10   # 신설
+    WEIGHT_MOMENTUM: int = 30
+    WEIGHT_QUALITY: int = 10
 
     # =========================================================
-    # 가치투자 (30점)
-    # PER(5) + PBR(4) + 배당(3) + 업종상대PER(5) + PEG(5) + EV/EBITDA(5) + PSR(3)
+    # 가치투자 (20점, v3.1)
+    # PER(4) + PBR(3) + 배당(2) + 업종상대PER(3) + PEG(3) + EV/EBITDA(3) + PSR(2)
     # =========================================================
 
-    PER_MAX_SCORE: int = 5
+    PER_MAX_SCORE: int = 4
     PER_THRESHOLDS: list[tuple[float, int]] = [
-        (5.0, 5), (10.0, 4), (15.0, 3), (25.0, 1),
+        (5.0, 4), (10.0, 3), (15.0, 2), (25.0, 1),
     ]
     PER_DEFAULT_SCORE: int = 0
 
-    PBR_MAX_SCORE: int = 4
+    PBR_MAX_SCORE: int = 3
     PBR_THRESHOLDS: list[tuple[float, int]] = [
-        (0.5, 4), (0.8, 3), (1.0, 2), (1.5, 1),
+        (0.5, 3), (0.8, 2), (1.0, 1),
     ]
     PBR_DEFAULT_SCORE: int = 0
 
-    DIVIDEND_MAX_SCORE: int = 3
+    DIVIDEND_MAX_SCORE: int = 2
     DIVIDEND_THRESHOLDS: list[tuple[float, int]] = [
-        (5.0, 3), (3.0, 2), (1.0, 1),
+        (5.0, 2), (2.0, 1),
     ]
     DIVIDEND_DEFAULT_SCORE: int = 0
 
-    SECTOR_PER_MAX_SCORE: int = 5
+    SECTOR_PER_MAX_SCORE: int = 3
     SECTOR_PER_THRESHOLDS: list[tuple[float, int]] = [
-        (0.4, 5), (0.6, 4), (0.8, 3), (1.0, 1),
+        (0.5, 3), (0.8, 2), (1.0, 1),
     ]
     SECTOR_PER_DEFAULT_SCORE: int = 0
 
@@ -203,35 +207,30 @@ class ScoringConfig:
     # 가중치가 재배분된다 (40+30 → 0.571:0.429).
     EV_EBITDA_EXCLUDED_SECTORS: set[str] = {"금융", "보험", "증권"}
 
-    # --- PEG (5점, 신설) ---
+    # --- PEG (3점, v3.1) ---
     # PEG = PER / 이익성장률. 1.0 이하면 성장 대비 저평가
-    PEG_MAX_SCORE: int = 5
+    PEG_MAX_SCORE: int = 3
     PEG_THRESHOLDS: list[tuple[float, int]] = [
-        (0.5, 5),    # PEG < 0.5: 극단적 저평가 성장주
-        (0.8, 4),
-        (1.0, 3),    # PEG 1.0: 적정
-        (1.5, 2),
-        (2.0, 1),
+        (0.5, 3),    # PEG < 0.5: 극단적 저평가 성장주
+        (1.0, 2),    # PEG 1.0: 적정
+        (1.5, 1),
     ]
     PEG_DEFAULT_SCORE: int = 0
 
-    # --- EV/EBITDA (5점, 신설) ---
+    # --- EV/EBITDA (3점, v3.1) ---
     # 기업가치 대비 영업현금흐름. 낮을수록 저평가
-    EV_EBITDA_MAX_SCORE: int = 5
+    EV_EBITDA_MAX_SCORE: int = 3
     EV_EBITDA_THRESHOLDS: list[tuple[float, int]] = [
-        (4.0, 5),     # EV/EBITDA < 4: 극저평가
-        (6.0, 4),
-        (8.0, 3),
-        (12.0, 2),
-        (20.0, 1),
+        (4.0, 3),
+        (8.0, 2),
+        (12.0, 1),
     ]
     EV_EBITDA_DEFAULT_SCORE: int = 0
 
-    # --- PSR (3점, 신설) ---
+    # --- PSR (2점, v3.1) ---
     # 시총/매출액. 적자기업도 평가 가능. 낮을수록 저평가
-    PSR_MAX_SCORE: int = 3
+    PSR_MAX_SCORE: int = 2
     PSR_THRESHOLDS: list[tuple[float, int]] = [
-        (0.3, 3),
         (0.5, 2),
         (1.0, 1),
     ]
@@ -308,47 +307,47 @@ class ScoringConfig:
     }
 
     # =========================================================
-    # 모멘텀 (20점)
-    # 20MA(2) + 60MA(1) + 거래량(2) + RSI(3) + MACD(2) + 수급(8) + 52주위치(2)
+    # 모멘텀 (30점, v3.1)
+    # 20MA(3) + 60MA(2) + 거래량(3) + RSI(4) + MACD(3) + 수급(12) + 52주위치(3)
     # =========================================================
 
     MA20_SCORES: dict[str, int] = {
-        "strong_up": 2, "above": 1, "bounce": 1, "down": 0,
+        "strong_up": 3, "above": 2, "bounce": 1, "down": 0,
     }
     MA60_SCORES: dict[str, int] = {
-        "golden_cross": 1, "above": 1, "bounce": 0, "down": 0,
+        "golden_cross": 2, "above": 2, "bounce": 1, "down": 0,
     }
     VOLUME_SCORES: dict[str, int] = {
-        "surge": 2, "increase": 1, "normal": 1, "decrease": 0,
+        "surge": 3, "increase": 2, "normal": 1, "decrease": 0,
     }
     VOLUME_SURGE_RATIO: float = 1.5
     VOLUME_INCREASE_RATIO: float = 1.2
 
     RSI_PERIOD: int = 14
     RSI_SCORES: dict[str, int] = {
-        "oversold_bounce": 3, "healthy_up": 3, "neutral": 2,
+        "oversold_bounce": 4, "healthy_up": 4, "neutral": 3,
         "strong_but_ok": 1, "overbought": 0,
     }
     MACD_SCORES: dict[str, int] = {
-        "bullish_cross": 2, "bullish": 1, "bearish": 0, "bearish_cross": 0,
+        "bullish_cross": 3, "bullish": 2, "bearish": 0, "bearish_cross": 0,
     }
 
-    # === 수급 (총 8점) - 외국인/기관 5일·20일 분리 채점 ===
-    # 외국인 5일 연속(3) + 외국인 20일 누적(3) + 기관 5일 연속(1) + 기관 20일 누적(1)
-    SUPPLY_DEMAND_MAX_SCORE: int = 8
+    # === 수급 (총 12점, v3.1) - 외국인/기관 5일·20일 분리 채점 ===
+    # 외국인 5일(max 5) + 외국인 20일(max 4) + 기관 5일(max 2) + 기관 20일(max 1) = 12
+    SUPPLY_DEMAND_MAX_SCORE: int = 12
     SUPPLY_DEMAND_SCORES: dict[str, int] = {
-        "foreign_5d_streak_3": 2,    # 외국인 5일 연속 순매수 3일 이상
-        "foreign_5d_streak_5": 3,    # 외국인 5일 연속 순매수 5일 이상
-        "foreign_20d_positive": 2,   # 외국인 20일 누적 양수
-        "foreign_20d_strong": 3,     # 외국인 20일 중 10일 이상 매수
-        "inst_5d_streak_3": 1,       # 기관 5일 연속 3일 이상
+        "foreign_5d_streak_3": 3,    # 외국인 5일 연속 순매수 3일 이상
+        "foreign_5d_streak_5": 5,    # 외국인 5일 연속 순매수 5일 이상
+        "foreign_20d_positive": 3,   # 외국인 20일 누적 양수
+        "foreign_20d_strong": 4,     # 외국인 20일 중 10일 이상 매수
+        "inst_5d_streak_3": 2,       # 기관 5일 연속 3일 이상
         "inst_20d_positive": 1,      # 기관 20일 누적 양수
     }
 
-    # --- 52주 고저 대비 위치 (2점, 신설) ---
+    # --- 52주 고저 대비 위치 (3점, v3.1) ---
     WEEK52_SCORES: dict[str, int] = {
-        "near_low": 2,        # 52주 최저 근처 (하위 20%) → 과매도 반등 기회
-        "lower_half": 1,      # 하위 20~50%
+        "near_low": 3,        # 52주 최저 근처 (하위 20%) → 과매도 반등 기회
+        "lower_half": 2,      # 하위 20~50%
         "upper_half": 1,      # 상위 50~80%
         "near_high": 0,       # 52주 최고 근처 (상위 20%) → 추가 상승 제한
     }
@@ -381,8 +380,10 @@ class ScoringConfig:
 
 
 class SignalConfig:
+    # v3.1: 모멘텀 max 20→30 가중 변경에 따라 momentum 임계 비례 상향
+    # (STRONG_BUY_MOMENTUM 10→15: 50% 유지, SELL_MOMENTUM_MIN 4→6: 20% 유지)
     STRONG_BUY_SCORE: int = 75
-    STRONG_BUY_MOMENTUM: int = 10
+    STRONG_BUY_MOMENTUM: int = 15
     STRONG_BUY_FINANCIAL: int = 12
     STRONG_BUY_GROWTH: int = 10
 
@@ -394,13 +395,18 @@ class SignalConfig:
     HOLD_SCORE_MAX: int = 59
 
     SELL_SCORE: int = 45
-    SELL_MOMENTUM_MIN: int = 4
+    SELL_MOMENTUM_MIN: int = 6
 
     MIN_MARKET_CAP: int = 500_000_000_000
     MIN_TRADING_VALUE: int = 5_000_000_000
     EXCLUDE_CONSECUTIVE_LOSS_YEARS: int = 3
     FINANCIAL_SECTOR_CODES: list[str] = ["0500", "0600", "0700"]
     TOP_N: int = 10
+
+    # v3.1: 60일선 추세 필터 (떨어지는 칼날 차단)
+    # 현재가 < 60MA × (1 - MA60_FILTER_BUFFER_PCT/100) 종목 제외.
+    # chart_data 부족 시 (60일 미만) 필터 통과 (보수적).
+    MA60_FILTER_BUFFER_PCT: float = 3.0
 
 
 class StopLossConfig:

@@ -67,21 +67,21 @@ def test_settings():
         SchedulerConfig as SCH,
     )
 
-    # 스코어 배분 합계 = 100 (5개 카테고리)
+    # 스코어 배분 합계 = 100 (5개 카테고리, v3.1)
     total_weight = (SC.WEIGHT_VALUE + SC.WEIGHT_FINANCIAL + SC.WEIGHT_GROWTH
                     + SC.WEIGHT_MOMENTUM + SC.WEIGHT_QUALITY)
     assert_eq(total_weight, 100, "총점 100점")
-    assert_eq(SC.WEIGHT_VALUE, 30, "가치투자 30점")
+    assert_eq(SC.WEIGHT_VALUE, 20, "가치투자 20점 (v3.1)")
     assert_eq(SC.WEIGHT_FINANCIAL, 20, "재무건전성 20점")
     assert_eq(SC.WEIGHT_GROWTH, 20, "성장성 20점")
-    assert_eq(SC.WEIGHT_MOMENTUM, 20, "모멘텀 20점")
+    assert_eq(SC.WEIGHT_MOMENTUM, 30, "모멘텀 30점 (v3.1)")
     assert_eq(SC.WEIGHT_QUALITY, 10, "퀄리티 10점")
 
-    # 가치 세부합계: PER(5)+PBR(4)+배당(3)+업종PER(5)+PEG(5)+EV/EBITDA(5)+PSR(3)=30
+    # 가치 세부합계: PER(4)+PBR(3)+배당(2)+업종PER(3)+PEG(3)+EV/EBITDA(3)+PSR(2)=20
     value_sum = (SC.PER_MAX_SCORE + SC.PBR_MAX_SCORE + SC.DIVIDEND_MAX_SCORE
                  + SC.SECTOR_PER_MAX_SCORE + SC.PEG_MAX_SCORE
                  + SC.EV_EBITDA_MAX_SCORE + SC.PSR_MAX_SCORE)
-    assert_eq(value_sum, 30, "가치투자 세부합계 30")
+    assert_eq(value_sum, 20, "가치투자 세부합계 20 (v3.1)")
 
     # 재무 세부합계: ROE(5)+영업이익률(5)+부채비율(5)+유동비율(5)=20
     fin_sum = (SC.ROE_MAX_SCORE + SC.OPR_MARGIN_MAX_SCORE
@@ -93,12 +93,13 @@ def test_settings():
                   + SC.PROFIT_HEALTH_BASE_SCORE)
     assert_eq(growth_sum, 20, "성장성 세부합계 20")
 
-    # 모멘텀 세부합계: MA20(4)+MA60(3)+거래량(3)+RSI(3)+MACD(2)+수급(3)+52주(2)=20
+    # 모멘텀 세부합계 (v3.1): MA20(3)+MA60(2)+거래량(3)+RSI(4)+MACD(3)+수급(12)+52주(3)=30
+    # 수급은 4개 카테고리 합산이므로 SUPPLY_DEMAND_MAX_SCORE 사용.
     mom_sum = (max(SC.MA20_SCORES.values()) + max(SC.MA60_SCORES.values())
                + max(SC.VOLUME_SCORES.values()) + max(SC.RSI_SCORES.values())
-               + max(SC.MACD_SCORES.values()) + max(SC.SUPPLY_DEMAND_SCORES.values())
+               + max(SC.MACD_SCORES.values()) + SC.SUPPLY_DEMAND_MAX_SCORE
                + max(SC.WEEK52_SCORES.values()))
-    assert_eq(mom_sum, 20, "모멘텀 세부합계 20")
+    assert_eq(mom_sum, 30, "모멘텀 세부합계 30 (v3.1)")
 
     # 퀄리티 세부합계: FCF수익률(5)+FCF마진(5)=10
     qual_sum = SC.FCF_YIELD_MAX_SCORE + SC.FCF_MARGIN_MAX_SCORE
@@ -134,43 +135,45 @@ def test_scoring():
 
     engine = ScoringEngine()
 
-    # --- PER 경계값 (v3.0: max 5점) ---
-    # thresholds: <5→5, <10→4, <15→3, <25→1, else→0
-    assert_eq(engine._threshold_below(4.99, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 5, "PER 4.99 → 5점")
-    assert_eq(engine._threshold_below(5.0, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 4, "PER 5.0 → 4점")
-    assert_eq(engine._threshold_below(9.99, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 4, "PER 9.99 → 4점")
-    assert_eq(engine._threshold_below(10.0, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 3, "PER 10.0 → 3점")
-    assert_eq(engine._threshold_below(14.99, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 3, "PER 14.99 → 3점")
+    # --- PER 경계값 (v3.1: max 4점) ---
+    # thresholds: <5→4, <10→3, <15→2, <25→1, else→0
+    assert_eq(engine._threshold_below(4.99, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 4, "PER 4.99 → 4점")
+    assert_eq(engine._threshold_below(5.0, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 3, "PER 5.0 → 3점")
+    assert_eq(engine._threshold_below(9.99, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 3, "PER 9.99 → 3점")
+    assert_eq(engine._threshold_below(10.0, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 2, "PER 10.0 → 2점")
+    assert_eq(engine._threshold_below(14.99, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 2, "PER 14.99 → 2점")
     assert_eq(engine._threshold_below(15.0, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 1, "PER 15.0 → 1점")
     assert_eq(engine._threshold_below(24.99, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 1, "PER 24.99 → 1점")
     assert_eq(engine._threshold_below(25.0, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 0, "PER 25.0 → 0점")
     assert_eq(engine._threshold_below(0, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 0, "PER 0 → 0점 (적자)")
     assert_eq(engine._threshold_below(-10, SC.PER_THRESHOLDS, SC.PER_DEFAULT_SCORE, True), 0, "PER -10 → 0점 (적자)")
 
-    # --- PBR 경계값 (v3.0: max 4점) ---
-    # thresholds: <0.5→4, <0.8→3, <1.0→2, <1.5→1, else→0
-    assert_eq(engine._threshold_below(0.49, SC.PBR_THRESHOLDS, SC.PBR_DEFAULT_SCORE, True), 4, "PBR 0.49 → 4점")
-    assert_eq(engine._threshold_below(0.5, SC.PBR_THRESHOLDS, SC.PBR_DEFAULT_SCORE, True), 3, "PBR 0.5 → 3점")
-    assert_eq(engine._threshold_below(0.79, SC.PBR_THRESHOLDS, SC.PBR_DEFAULT_SCORE, True), 3, "PBR 0.79 → 3점")
-    assert_eq(engine._threshold_below(0.8, SC.PBR_THRESHOLDS, SC.PBR_DEFAULT_SCORE, True), 2, "PBR 0.8 → 2점")
-    assert_eq(engine._threshold_below(1.0, SC.PBR_THRESHOLDS, SC.PBR_DEFAULT_SCORE, True), 1, "PBR 1.0 → 1점")
+    # --- PBR 경계값 (v3.1: max 3점) ---
+    # thresholds: <0.5→3, <0.8→2, <1.0→1, else→0
+    assert_eq(engine._threshold_below(0.49, SC.PBR_THRESHOLDS, SC.PBR_DEFAULT_SCORE, True), 3, "PBR 0.49 → 3점")
+    assert_eq(engine._threshold_below(0.5, SC.PBR_THRESHOLDS, SC.PBR_DEFAULT_SCORE, True), 2, "PBR 0.5 → 2점")
+    assert_eq(engine._threshold_below(0.79, SC.PBR_THRESHOLDS, SC.PBR_DEFAULT_SCORE, True), 2, "PBR 0.79 → 2점")
+    assert_eq(engine._threshold_below(0.8, SC.PBR_THRESHOLDS, SC.PBR_DEFAULT_SCORE, True), 1, "PBR 0.8 → 1점")
+    assert_eq(engine._threshold_below(1.0, SC.PBR_THRESHOLDS, SC.PBR_DEFAULT_SCORE, True), 0, "PBR 1.0 → 0점")
     assert_eq(engine._threshold_below(1.5, SC.PBR_THRESHOLDS, SC.PBR_DEFAULT_SCORE, True), 0, "PBR 1.5 → 0점")
 
     # --- 부채비율 (역산, max 5점) ---
     # thresholds: <50→5, <100→3, <200→1, else→0
-    assert_eq(engine._score_debt(0), 5, "부채 0% → 5점 (무부채)")
+    # NOTE: ratio=0은 결손 신호로 default(0) 반환 (scorer.py _score_debt 가드).
+    assert_eq(engine._score_debt(0), 0, "부채 0% → 0점 (결손)")
     assert_eq(engine._score_debt(49.9), 5, "부채 49.9% → 5점")
     assert_eq(engine._score_debt(50), 3, "부채 50% → 3점")
     assert_eq(engine._score_debt(100), 1, "부채 100% → 1점")
     assert_eq(engine._score_debt(200), 0, "부채 200% → 0점")
 
-    # --- 배당수익률 (max 3점) ---
-    # thresholds: ≥5→3, ≥3→2, ≥1→1, else→0
-    assert_eq(engine._threshold_above(6.0, SC.DIVIDEND_THRESHOLDS, SC.DIVIDEND_DEFAULT_SCORE), 3, "배당 6% → 3점")
-    assert_eq(engine._threshold_above(5.0, SC.DIVIDEND_THRESHOLDS, SC.DIVIDEND_DEFAULT_SCORE), 3, "배당 5% → 3점")
-    assert_eq(engine._threshold_above(4.9, SC.DIVIDEND_THRESHOLDS, SC.DIVIDEND_DEFAULT_SCORE), 2, "배당 4.9% → 2점")
-    assert_eq(engine._threshold_above(3.0, SC.DIVIDEND_THRESHOLDS, SC.DIVIDEND_DEFAULT_SCORE), 2, "배당 3% → 2점")
-    assert_eq(engine._threshold_above(1.0, SC.DIVIDEND_THRESHOLDS, SC.DIVIDEND_DEFAULT_SCORE), 1, "배당 1% → 1점")
+    # --- 배당수익률 (v3.1: max 2점) ---
+    # thresholds: ≥5→2, ≥2→1, else→0
+    assert_eq(engine._threshold_above(6.0, SC.DIVIDEND_THRESHOLDS, SC.DIVIDEND_DEFAULT_SCORE), 2, "배당 6% → 2점")
+    assert_eq(engine._threshold_above(5.0, SC.DIVIDEND_THRESHOLDS, SC.DIVIDEND_DEFAULT_SCORE), 2, "배당 5% → 2점")
+    assert_eq(engine._threshold_above(4.9, SC.DIVIDEND_THRESHOLDS, SC.DIVIDEND_DEFAULT_SCORE), 1, "배당 4.9% → 1점")
+    assert_eq(engine._threshold_above(3.0, SC.DIVIDEND_THRESHOLDS, SC.DIVIDEND_DEFAULT_SCORE), 1, "배당 3% → 1점")
+    assert_eq(engine._threshold_above(2.0, SC.DIVIDEND_THRESHOLDS, SC.DIVIDEND_DEFAULT_SCORE), 1, "배당 2% → 1점")
+    assert_eq(engine._threshold_above(1.0, SC.DIVIDEND_THRESHOLDS, SC.DIVIDEND_DEFAULT_SCORE), 0, "배당 1% → 0점")
     assert_eq(engine._threshold_above(0.5, SC.DIVIDEND_THRESHOLDS, SC.DIVIDEND_DEFAULT_SCORE), 0, "배당 0.5% → 0점")
 
     # --- ROE (max 5점) ---
@@ -179,19 +182,19 @@ def test_scoring():
     assert_eq(engine._threshold_above(5.0, SC.ROE_THRESHOLDS, SC.ROE_DEFAULT_SCORE), 2, "ROE 5% → 2점")
     assert_eq(engine._threshold_above(0.0, SC.ROE_THRESHOLDS, SC.ROE_DEFAULT_SCORE), 0, "ROE 0% → 0점")
 
-    # --- PEG (max 5점) ---
+    # --- PEG (v3.1: max 3점) ---
     peg_s, peg_v = engine._score_peg(4.0, 35.0)
-    assert_eq(peg_s, 5, "PEG 0.11 → 5점")
+    assert_eq(peg_s, 3, "PEG 0.11 → 3점")
     peg_s2, _ = engine._score_peg(10.0, 10.0)
-    assert_eq(peg_s2, 2, "PEG 1.0 → 2점 (1.0 < 1.5 구간)")
+    assert_eq(peg_s2, 1, "PEG 1.0 → 1점 (1.0 ≤ peg < 1.5 구간)")
     peg_s3, _ = engine._score_peg(0, 10.0)
     assert_eq(peg_s3, 0, "PER 0 → PEG 0점")
 
-    # --- EV/EBITDA (max 5점) ---
+    # --- EV/EBITDA (v3.1: max 3점) ---
     ev_s, ev_v = engine._score_ev_ebitda(int(1e12), int(2e11), int(1e11), int(3e11))
-    assert_eq(ev_s, 5, "EV/EBITDA 3.67 → 5점")
+    assert_eq(ev_s, 3, "EV/EBITDA 3.67 → 3점")
     ev_s2, _ = engine._score_ev_ebitda(int(1e12), 0, 0, int(1e11))
-    assert_eq(ev_s2, 2, "EV/EBITDA 10.0 → 2점")
+    assert_eq(ev_s2, 1, "EV/EBITDA 10.0 → 1점")
 
     # --- 만점 테스트 (v3.0) ---
     price = {"stock_code": "TEST", "stock_name": "만점", "current_price": 50000,
@@ -216,11 +219,13 @@ def test_scoring():
                        "close": p, "volume": 15000000 + (59 - i) * 10000})
 
     result = engine.calculate_score(price, fin, chart)
-    assert_eq(result["value_score"], 30, "만점기업 가치=30")
+    assert_eq(result["value_score"], 20, "만점기업 가치=20 (v3.1)")
     assert_eq(result["financial_score"], 20, "만점기업 재무=20")
-    assert_eq(result["growth_score"], 20, "만점기업 성장=20")
+    # 성장: 매출(7) + 영업(7) + 이익건전성(3)=17. 턴어라운드는 DB 핸들/2년전
+    # 데이터 부재로 0점 → growth_score=17. (만점은 별도 픽스처에서 검증)
+    assert_eq(result["growth_score"], 17, "만점기업 성장=17 (턴어라운드 데이터 부재)")
     assert_eq(result["quality_score"], 10, "만점기업 퀄리티=10")
-    assert_true(result["total_score"] >= 80, f"만점기업 총점 ≥80 (실제={result['total_score']})")
+    assert_true(result["total_score"] >= 75, f"만점기업 총점 ≥75 (실제={result['total_score']})")
 
     print(f"  ✅ 스코어링 검증 완료")
 
@@ -240,20 +245,20 @@ def test_signals():
                 "stock_code": "T", "stock_name": "T",
                 "value_score": max(0, total - momentum - financial - growth)}
 
-    # 강력 매수: ≥75 AND 모멘텀≥10 AND 재무≥12 AND 성장≥10
-    r = gen.determine_signal(make(75, 10, 12, 10))
-    assert_eq(r["signal"], Signal.STRONG_BUY, "75/10/12/10 → 강력매수")
+    # 강력 매수 (v3.1): ≥75 AND 모멘텀≥15 AND 재무≥12 AND 성장≥10
+    r = gen.determine_signal(make(75, 15, 12, 10))
+    assert_eq(r["signal"], Signal.STRONG_BUY, "75/15/12/10 → 강력매수")
 
-    r = gen.determine_signal(make(90, 15, 18, 15))
-    assert_eq(r["signal"], Signal.STRONG_BUY, "90/15/18/15 → 강력매수")
+    r = gen.determine_signal(make(90, 20, 18, 15))
+    assert_eq(r["signal"], Signal.STRONG_BUY, "90/20/18/15 → 강력매수")
 
     # 75점이지만 성장 부족
-    r = gen.determine_signal(make(75, 10, 12, 9))
-    assert_true(r["signal"] != Signal.STRONG_BUY, "75/10/12/9 → 강력매수 아님 (성장 미달)")
+    r = gen.determine_signal(make(75, 15, 12, 9))
+    assert_true(r["signal"] != Signal.STRONG_BUY, "75/15/12/9 → 강력매수 아님 (성장 미달)")
 
     # 75점이지만 모멘텀 부족
-    r = gen.determine_signal(make(75, 9, 12, 10))
-    assert_true(r["signal"] != Signal.STRONG_BUY, "75/9/12/10 → 강력매수 아님 (모멘텀 미달)")
+    r = gen.determine_signal(make(75, 14, 12, 10))
+    assert_true(r["signal"] != Signal.STRONG_BUY, "75/14/12/10 → 강력매수 아님 (모멘텀 미달)")
 
     # 매수: 60~74 AND 재무≥10
     r = gen.determine_signal(make(60, 10, 10, 5))

@@ -18,6 +18,20 @@ from config.settings import SignalConfig
 logger = logging.getLogger(__name__)
 
 
+def _calc_ma60(chart_data: list[dict[str, Any]]) -> float:
+    """60일 종가 평균. 데이터 60일 미만이면 0 반환 (필터 통과).
+
+    chart_data는 일봉 리스트로, 각 원소는 {"close": float, ...} 형태.
+    리스트 순서(최신→과거 vs 과거→최신)와 무관하게 마지막 60개 평균.
+    """
+    if not chart_data or len(chart_data) < 60:
+        return 0.0
+    closes = [c.get("close", 0) for c in chart_data[-60:] if c.get("close", 0) > 0]
+    if len(closes) < 60:
+        return 0.0
+    return sum(closes) / len(closes)
+
+
 # 신호 상수
 class Signal:
     """매수/매도/보유 신호 상수."""
@@ -159,18 +173,21 @@ class SignalGenerator:
         self,
         scored_list: list[dict[str, Any]],
         financial_list: Optional[list[dict[str, Any]]] = None,
+        chart_dict: Optional[dict[str, list[dict[str, Any]]]] = None,
     ) -> list[dict[str, Any]]:
         """위험 종목을 필터링한다.
 
-        설계서 5.2 조건:
-        - 시가총액 1,000억 미만 제외
-        - 일평균 거래대금 10억 미만 제외
-        - 금융주 별도 분류
+        설계서 5.2 + v3.1 60MA 추세 필터:
+        - 시가총액 미달 제외
+        - 거래대금 미달 제외
         - 3년 연속 적자 기업 제외
+        - 현재가 < 60일선 × (1 - 버퍼%) 종목 제외 (떨어지는 칼날 차단).
+          chart_dict 미주입 또는 차트 60일 미만 시 통과 (보수적).
 
         Args:
             scored_list: 스코어링 결과 리스트
             financial_list: 재무 데이터 리스트 (적자 확인용)
+            chart_dict: 종목별 일봉 차트 (60MA 계산용). 없으면 60MA 필터 생략.
 
         Returns:
             list[dict]: 필터링된 종목 리스트
@@ -179,8 +196,11 @@ class SignalGenerator:
         if financial_list:
             fin_map = {f["stock_code"]: f for f in financial_list}
 
+        chart_map = chart_dict or {}
+        buffer = 1.0 - (self.cfg.MA60_FILTER_BUFFER_PCT / 100.0)
+
         filtered: list[dict[str, Any]] = []
-        excluded_count = {"market_cap": 0, "trading": 0, "loss": 0}
+        excluded_count = {"market_cap": 0, "trading": 0, "loss": 0, "ma60": 0}
 
         for stock in scored_list:
             code = stock.get("stock_code", "")
@@ -204,14 +224,22 @@ class SignalGenerator:
                 excluded_count["loss"] += 1
                 continue
 
+            # 60MA 추세 필터 (v3.1): 현재가가 60일선보다 버퍼% 이상 아래면 제외
+            ma60 = _calc_ma60(chart_map.get(code, []))
+            if ma60 > 0:
+                current_price = stock.get("current_price", 0)
+                if current_price > 0 and current_price < ma60 * buffer:
+                    excluded_count["ma60"] += 1
+                    continue
+
             filtered.append(stock)
 
         logger.info(
             "필터링 결과: %d/%d 종목 통과 "
-            "(제외 - 시총: %d, 거래: %d, 적자: %d)",
+            "(제외 - 시총: %d, 거래: %d, 적자: %d, 60MA: %d)",
             len(filtered), len(scored_list),
             excluded_count["market_cap"], excluded_count["trading"],
-            excluded_count["loss"],
+            excluded_count["loss"], excluded_count["ma60"],
         )
 
         return filtered
@@ -260,6 +288,7 @@ class SignalGenerator:
         scored_list: list[dict[str, Any]],
         financial_list: Optional[list[dict[str, Any]]] = None,
         stoploss_map: Optional[dict[str, bool]] = None,
+        chart_dict: Optional[dict[str, list[dict[str, Any]]]] = None,
     ) -> dict[str, Any]:
         """전체 신호 생성 파이프라인을 실행한다.
 
@@ -267,6 +296,7 @@ class SignalGenerator:
             scored_list: 스코어링 결과 리스트
             financial_list: 재무 데이터 (필터링용)
             stoploss_map: {종목코드: 손절 도달 여부}
+            chart_dict: 종목별 일봉 차트 (60MA 추세 필터용, v3.1)
 
         Returns:
             dict: 전체 결과
@@ -280,8 +310,8 @@ class SignalGenerator:
         if stoploss_map is None:
             stoploss_map = {}
 
-        # 1. 필터링
-        filtered = self.filter_stocks(scored_list, financial_list)
+        # 1. 필터링 (60MA 추세 필터 포함)
+        filtered = self.filter_stocks(scored_list, financial_list, chart_dict)
 
         # 2. 신호 판정
         all_signals: list[dict[str, Any]] = []

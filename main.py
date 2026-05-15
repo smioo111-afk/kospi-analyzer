@@ -273,6 +273,7 @@ class AnalysisPipeline:
                 scored_list=scored_list,
                 financial_list=financial_list,
                 stoploss_map=stoploss_hit_map,
+                chart_dict=chart_dict,
             )
 
             top_10 = result["top_10"]
