@@ -70,7 +70,7 @@ for idx, stock in enumerate(top_10):
 
 ### 3.1 `analysis/scorer.py` — 점수 계산 (가장 핵심)
 
-`class ScoringEngine`. 5축 가중합 — value 30 / financial 20 / growth 20 / momentum 20 / quality 10 = **total 100점**.
+`class ScoringEngine`. 5축 가중합 — value 20 / financial 20 / growth 20 / momentum 30 / quality 10 = **total 100점** (v3.1).
 
 #### `calculate_score(price_data, financial_data, chart_data) -> dict`
 입력:
@@ -88,11 +88,11 @@ for idx, stock in enumerate(top_10):
 - `foreign_net_buy_5d, institutional_net_buy_5d` 등 수급
 - `consecutive_op_decline_years, turnaround_score` 등 보조
 
-#### 5축 세부 함수
-- `_calc_value_score`: PER + 섹터PER + PBR + 배당 + PEG + EV/EBITDA + PSR (30점)
+#### 5축 세부 함수 (v3.1)
+- `_calc_value_score`: PER(4) + PBR(3) + 배당(2) + 섹터PER(3) + PEG(3) + EV/EBITDA(3) + PSR(2) = 20점
 - `_calc_financial_score`: ROE + 영업이익률 + 부채비율 + 유동비율 (20점)
 - `_calc_growth_score`: 매출/영업이익 증가율 + profit_health + turnaround (20점)
-- `_calc_momentum_score`: MA + 거래량 + RSI + MACD + 수급(5d/20d) + 52주 위치 (20점)
+- `_calc_momentum_score`: MA20(3) + MA60(2) + 거래량(3) + RSI(4) + MACD(3) + 수급(12) + 52주(3) = 30점
 - `_calc_quality_score`: FCF yield + FCF margin (10점) — **`fcf <= 0`이면 즉시 0점 default**
 
 #### 적정주가 (`_calc_fair_value`)
@@ -107,9 +107,10 @@ for idx, stock in enumerate(top_10):
 
 `class SignalGenerator`. `Signal` constants: STRONG_BUY/BUY/HOLD/SELL/STRONG_SELL → label("⭐⭐ 강력매수" 등).
 
-- `generate_signals(scored_list, financial_list, stoploss_map) -> {top_10, warnings, all_signals, stats}`
+- `generate_signals(scored_list, financial_list, stoploss_map, chart_dict) -> {top_10, warnings, all_signals, stats}`
 - `_judge(score) -> (signal, reason)`: total/momentum/financial 임계 (config.SignalConfig)
-- `filter_stocks`: 시총 5000억+, 거래대금 50억+, 연속 적자 3년 미만, admin_filter 통과
+- `filter_stocks(scored_list, financial_list, chart_dict)`: 시총 5000억+, 거래대금 50억+, 연속 적자 3년 미만, admin_filter 통과, **현재가 ≥ 60MA × (1 − MA60_FILTER_BUFFER_PCT/100) (v3.1, 떨어지는 칼날 차단)**. chart_dict 미주입/60일 미만 시 60MA 필터 생략.
+- `_calc_ma60(chart_data)`: 60일 종가 평균, 데이터 부족 시 0 반환 (v3.1 신설)
 - `select_top_n(filtered, n=10)`: total_score 기준
 
 ### 3.3 `analysis/buy_state.py` — 매수 상태 분류
@@ -353,8 +354,8 @@ RANK_DROP_THRESHOLD = -4         # 4계단 이상 하락
 ### `class TelegramConfig`
 - `MAX_MESSAGE_LENGTH=4000`
 
-### `class ScoringConfig` (점수 임계 상세)
-- 가중: VALUE 30 / FINANCIAL 20 / GROWTH 20 / MOMENTUM 20 / QUALITY 10 = 100
+### `class ScoringConfig` (점수 임계 상세, v3.1)
+- 가중: VALUE 20 / FINANCIAL 20 / GROWTH 20 / MOMENTUM 30 / QUALITY 10 = 100
 - PER/PBR/배당/PEG/EV-EBITDA/PSR 임계 (각 임계치별 점수 매핑)
 - 섹터 평균 PER/PBR/EV-EBITDA dict (`SECTOR_AVG_*` + `DEFAULT_*`)
 - ROE/영업이익률/부채/유동 임계
@@ -365,11 +366,12 @@ RANK_DROP_THRESHOLD = -4         # 4계단 이상 하락
 - FCF: `FCF_YIELD_THRESHOLDS [(10,5),(7,4),(5,3),(3,2),(1,1)]`, `DEFAULT=0`. `FCF_MARGIN [(15,5),(10,4),(5,3),(0,1)]`. **`fcf <= 0`이면 즉시 0점**
 - `EV_EBITDA_EXCLUDED_SECTORS = {"금융","보험","증권"}`
 
-### `class SignalConfig` (신호 임계)
-- STRONG_BUY ≥ 75 + momentum ≥ 10 + financial ≥ 12 + growth ≥ 10
+### `class SignalConfig` (신호 임계, v3.1)
+- STRONG_BUY ≥ 75 + momentum ≥ 15 + financial ≥ 12 + growth ≥ 10
 - BUY 60~74 + financial ≥ 10
 - HOLD 45~59
-- SELL < 45
+- SELL < 45 + momentum < 6
+- `MA60_FILTER_BUFFER_PCT=3.0` (60일선 추세 필터 버퍼 — 현재가 < 60MA × 0.97 시 TOP에서 제외)
 
 ### `class FilterConfig`
 - `MIN_MARKET_CAP=500B`, `MIN_TRADING_VALUE=5B`
