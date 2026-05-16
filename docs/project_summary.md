@@ -84,21 +84,32 @@ for idx, stock in enumerate(top_10):
 - `current_price, market_cap, per, pbr, roe, ...`
 - `stoploss_price, stoploss_pct, atr` (signals_generator가 stoploss_map에서 별도 주입)
 - `fair_value_low, fair_value_high, fair_value_gap, fair_value_method`
+- `is_holding, holding_discount` (지주사 식별 + 적용된 할인율)
 - `week52_position` (mom["week52_pct"]에서 매핑)
 - `foreign_net_buy_5d, institutional_net_buy_5d` 등 수급
 - `consecutive_op_decline_years, turnaround_score` 등 보조
 
 #### 5축 세부 함수 (v3.1)
 - `_calc_value_score`: PER(4) + PBR(3) + 배당(2) + 섹터PER(3) + PEG(3) + EV/EBITDA(3) + PSR(2) = 20점
+  - **PBR은 섹터 상대** (`_score_pbr`): ratio = pbr/SECTOR_AVG_PBR.
+    절대 PBR 기준 자본집약 섹터 자동 만점/무형자산 섹터 자동 0점 차단.
+    섹터 평균 0/누락 시 절대 `PBR_THRESHOLDS` 폴백.
 - `_calc_financial_score`: ROE + 영업이익률 + 부채비율 + 유동비율 (20점)
+  - **ROE는 섹터 상대** (`_score_roe`): ratio = roe/SECTOR_AVG_ROE.
+    저ROE 섹터의 평균 종목도 정상 채점, 고ROE 섹터에선 평균치 이상만 가점.
+    섹터 평균 0/음수 시 절대 `ROE_THRESHOLDS` 폴백.
 - `_calc_growth_score`: 매출/영업이익 증가율 + profit_health + turnaround (20점)
 - `_calc_momentum_score`: MA20(3) + MA60(2) + 거래량(3) + RSI(4) + MACD(3) + 수급(12) + 52주(3) = 30점
 - `_calc_quality_score`: FCF yield + FCF margin (10점) — **`fcf <= 0`이면 즉시 0점 default**
 
 #### 적정주가 (`_calc_fair_value`)
 - 3-모델 가중평균 (PER, PBR, EV/EBITDA)
-- 반환: `{low, high, gap_pct, method}`
+- 반환: `{low, high, gap_pct, method, is_holding, holding_discount}`
 - 적정 범위 안: gap_pct = 0; 미만: 음수(저평가); 초과: 양수(고평가)
+- **지주사 할인**: `_is_holding_company(name, sector)`가 True면
+  fair_low/high만 `HOLDING_DISCOUNT_RATE`(=0.30)만큼 깎는다.
+  value_score는 보정하지 않음 — PER/PBR이 낮은 것은 사실이고,
+  NAV 대비 시장가의 통상 Holding Discount만 적정주가에 반영.
 
 #### 페널티 (config: `TOTAL_SCORE_PENALTIES`, `PROFIT_PENALTY_RULES`)
 - 매출/영업이익 연속 감소 / 부채비율 200% 초과 / 영업이익 적자 등 시 total에서 차감
@@ -357,7 +368,11 @@ RANK_DROP_THRESHOLD = -4         # 4계단 이상 하락
 ### `class ScoringConfig` (점수 임계 상세, v3.1)
 - 가중: VALUE 20 / FINANCIAL 20 / GROWTH 20 / MOMENTUM 30 / QUALITY 10 = 100
 - PER/PBR/배당/PEG/EV-EBITDA/PSR 임계 (각 임계치별 점수 매핑)
-- 섹터 평균 PER/PBR/EV-EBITDA dict (`SECTOR_AVG_*` + `DEFAULT_*`)
+- 섹터 평균 PER/PBR/EV-EBITDA/**ROE** dict (`SECTOR_AVG_*` + `DEFAULT_*`)
+- `SECTOR_PBR_THRESHOLDS` / `SECTOR_ROE_THRESHOLDS`: ratio(=metric/sector_avg)
+  기반 점수 매핑. 절대 PBR/ROE는 `*_THRESHOLDS` 폴백.
+- `HOLDING_NAME_PATTERNS=("홀딩스","Holdings","지주")`, `HOLDING_SECTORS=("지주회사",)`,
+  `HOLDING_DISCOUNT_RATE=0.30`: 지주사 적정주가만 30% 할인
 - ROE/영업이익률/부채/유동 임계
 - 매출/영업이익 성장 임계
 - `PROFIT_PENALTY_RULES`: 적자/감소/지속 영업적자 등 페널티
