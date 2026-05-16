@@ -12,9 +12,27 @@ import logging
 from datetime import datetime
 from typing import Any, Optional
 
-from config.settings import TelegramConfig
+from config.settings import ScoringConfig, TelegramConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _stock_is_holding(stock: dict[str, Any]) -> bool:
+    """포맷터에서 사용하는 지주사 판정 (scorer와 동일 규칙).
+
+    DB readback 경로(예: /stock 상세)는 stock_scores에 is_holding이
+    없으므로 종목명+섹터로 재유도한다. scorer.py와 규칙 일치 필수.
+    """
+    if stock.get("is_holding"):
+        return True
+    name = stock.get("stock_name", "") or ""
+    sector = stock.get("sector", "") or ""
+    for p in ScoringConfig.HOLDING_NAME_PATTERNS:
+        if p in name:
+            return True
+    if sector in ScoringConfig.HOLDING_SECTORS:
+        return True
+    return False
 
 # 숫자 이모지
 NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
@@ -266,12 +284,16 @@ class MessageFormatter:
         fair_high = stock.get("fair_value_high", 0)
         if fair_low > 0 and fair_high > 0:
             gap = stock.get("fair_value_gap", 0)
+            holding_tag = ""
+            if _stock_is_holding(stock):
+                disc = int(round((stock.get("holding_discount") or ScoringConfig.HOLDING_DISCOUNT_RATE) * 100))
+                holding_tag = f" [지주사 {disc}% 할인]"
             if gap < 0:
-                lines.append(f"   적정주가: {fair_low:,}~{fair_high:,}원 ({gap}% 저평가)")
+                lines.append(f"   적정주가: {fair_low:,}~{fair_high:,}원 ({gap}% 저평가){holding_tag}")
             elif gap > 0:
-                lines.append(f"   적정주가: {fair_low:,}~{fair_high:,}원 (+{gap}% 고평가)")
+                lines.append(f"   적정주가: {fair_low:,}~{fair_high:,}원 (+{gap}% 고평가){holding_tag}")
             else:
-                lines.append(f"   적정주가: {fair_low:,}~{fair_high:,}원 (적정)")
+                lines.append(f"   적정주가: {fair_low:,}~{fair_high:,}원 (적정){holding_tag}")
 
         if sl_price > 0:
             lines.append(f"   손절라인: {sl_price:,}원 ({sl_pct}%)")
@@ -432,8 +454,12 @@ class MessageFormatter:
                 tag = f"(+{gap}% 고평가)"
             else:
                 tag = "(적정)"
+            holding_tag = ""
+            if _stock_is_holding(stock):
+                disc = int(round((stock.get("holding_discount") or ScoringConfig.HOLDING_DISCOUNT_RATE) * 100))
+                holding_tag = f" [지주사 {disc}% 할인]"
             lines.append(
-                f"적정주가: {fair_low:,}~{fair_high:,}원 {tag}"
+                f"적정주가: {fair_low:,}~{fair_high:,}원 {tag}{holding_tag}"
             )
 
         # 손절 (stock dict에 저장된 값 우선, 없으면 인자 stoploss 사용)

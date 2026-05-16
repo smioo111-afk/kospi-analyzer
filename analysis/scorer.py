@@ -71,6 +71,27 @@ class ScoringEngine:
         return self.cfg.SECTOR_AVG_EV_EBITDA.get(
             sector, self.cfg.DEFAULT_SECTOR_EV_EBITDA)
 
+    def _get_sector_avg_roe(self, sector: str) -> float:
+        """업종 평균 ROE (%). 동적 데이터는 사용하지 않고 고정값만 본다."""
+        return self.cfg.SECTOR_AVG_ROE.get(
+            sector, self.cfg.DEFAULT_SECTOR_ROE)
+
+    def _is_holding_company(self, name: str, sector: str) -> bool:
+        """지주사 식별: 종목명 패턴 또는 sector 둘 중 하나라도 매칭되면 True.
+
+        - 종목명: HOLDING_NAME_PATTERNS 중 하나가 포함 (예: 'AK홀딩스', 'LX홀딩스', '롯데지주')
+        - sector: HOLDING_SECTORS 중 하나와 일치 (DART에서 '지주회사' 분류 시)
+        """
+        if not name and not sector:
+            return False
+        if name:
+            for p in self.cfg.HOLDING_NAME_PATTERNS:
+                if p in name:
+                    return True
+        if sector and sector in self.cfg.HOLDING_SECTORS:
+            return True
+        return False
+
     # 업종 평균 채택 최소 표본 수 (이하면 단일 종목 outlier 왜곡 위험으로 제외)
     SECTOR_AVG_MIN_SAMPLES: int = 3
 
@@ -191,6 +212,8 @@ class ScoringEngine:
             "fair_value_high": fair["high"],
             "fair_value_gap": fair["gap_pct"],
             "fair_value_method": fair["method"],
+            "is_holding": fair.get("is_holding", False),
+            "holding_discount": fair.get("holding_discount", 0.0),
             "turnaround_score": grw.get("turnaround_score", 0),
             "turnaround_label": grw.get("turnaround_label", ""),
             "detail": {"value": val, "financial": fin, "growth": grw,
@@ -312,12 +335,26 @@ class ScoringEngine:
 
         if not models:
             return {"low": 0, "high": 0, "gap_pct": 0.0,
-                    "method": "계산불가", "eps": eps_value}
+                    "method": "계산불가", "eps": eps_value,
+                    "is_holding": False, "holding_discount": 0.0}
 
         # 가중치 재배분 후 가중평균 계산
         total_weight = sum(w for w, _, _ in models)
         fair_low = int(sum(w * lo for w, lo, _ in models) / total_weight)
         fair_high = int(sum(w * hi for w, _, hi in models) / total_weight)
+
+        # === 지주사 할인 (NAV vs 시장가) ===
+        # 종목명/섹터로 지주사 식별 시 fair_low/high만 HOLDING_DISCOUNT_RATE
+        # 만큼 깎는다. value_score는 보정하지 않음 (PER/PBR이 낮은 것은
+        # 사실 — 적정주가만 시장 통상 할인을 반영).
+        name = price.get("stock_name", "")
+        is_holding = self._is_holding_company(name, sector)
+        holding_discount = 0.0
+        if is_holding:
+            holding_discount = self.cfg.HOLDING_DISCOUNT_RATE
+            mult = 1.0 - holding_discount
+            fair_low = int(fair_low * mult)
+            fair_high = int(fair_high * mult)
 
         # 괴리율: 음수=저평가, 0=적정 범위 내, 양수=고평가
         # 적정 범위 [fair_low, fair_high] 안이면 0% (적정).
@@ -339,6 +376,8 @@ class ScoringEngine:
             "gap_pct": gap_pct,
             "method": " + ".join(methods_used),
             "eps": eps_value,
+            "is_holding": is_holding,
+            "holding_discount": holding_discount,
         }
 
     # ================================================================
@@ -359,7 +398,7 @@ class ScoringEngine:
         cash = fin.get("cash_equivalents", 0)
 
         per_s = self._threshold_below(per, self.cfg.PER_THRESHOLDS, self.cfg.PER_DEFAULT_SCORE, True)
-        pbr_s = self._threshold_below(pbr, self.cfg.PBR_THRESHOLDS, self.cfg.PBR_DEFAULT_SCORE, True)
+        pbr_s = self._score_pbr(pbr, sector)
         div_s = self._threshold_above(div_yield, self.cfg.DIVIDEND_THRESHOLDS, self.cfg.DIVIDEND_DEFAULT_SCORE)
         sector_s = self._score_sector_per(per, sector)
         peg_s, peg_val = self._score_peg(per, op_growth)
@@ -385,6 +424,31 @@ class ScoringEngine:
             if ratio < t:
                 return s
         return self.cfg.SECTOR_PER_DEFAULT_SCORE
+
+    def _score_pbr(self, pbr: float, sector: str) -> int:
+        """PBR 점수 — 섹터 평균 대비 상대 비율로 채점.
+
+        절대 PBR로 채점하면 자본집약 섹터(전기·가스 0.4, 금융 0.5)는
+        평균 종목도 자동 만점, 무형자산 섹터(IT 1.5+, 제약 3.0+)는
+        평균 종목도 0점이 되어 섹터 간 비교가 무의미해진다.
+
+        섹터 평균 PBR이 없거나 0 이하인 경우 절대 PBR(PBR_THRESHOLDS)로
+        폴백한다.
+        """
+        if pbr is None or pbr <= 0:
+            return self.cfg.PBR_DEFAULT_SCORE
+        avg = self._get_sector_avg_pbr(sector)
+        if avg <= 0:
+            # 폴백: 절대 PBR 임계
+            for t, s in self.cfg.PBR_THRESHOLDS:
+                if pbr < t:
+                    return s
+            return self.cfg.PBR_DEFAULT_SCORE
+        ratio = pbr / avg
+        for t, s in self.cfg.SECTOR_PBR_THRESHOLDS:
+            if ratio < t:
+                return s
+        return self.cfg.SECTOR_PBR_DEFAULT_SCORE
 
     def _score_peg(self, per: float, growth: float) -> tuple[int, float]:
         """PEG = PER / 이익성장률. 성장 대비 밸류에이션."""
@@ -428,13 +492,38 @@ class ScoringEngine:
     # 재무건전성 (20점)
     # ================================================================
     def _calc_financial_score(self, fin: dict) -> dict:
-        roe_s = self._threshold_above(fin.get("roe", 0), self.cfg.ROE_THRESHOLDS, self.cfg.ROE_DEFAULT_SCORE)
+        roe_s = self._score_roe(fin.get("roe", 0), fin.get("sector", "기타"))
         opr_s = self._threshold_above(fin.get("operating_margin", 0), self.cfg.OPR_MARGIN_THRESHOLDS, self.cfg.OPR_MARGIN_DEFAULT_SCORE)
         debt_s = self._score_debt(fin.get("debt_ratio", 0))
         cur_s = self._threshold_above(fin.get("current_ratio", 0), self.cfg.CURRENT_RATIO_THRESHOLDS, self.cfg.CURRENT_RATIO_DEFAULT_SCORE)
         return {"roe_score": roe_s, "operating_margin_score": opr_s,
                 "debt_ratio_score": debt_s, "current_ratio_score": cur_s,
                 "total": roe_s + opr_s + debt_s + cur_s}
+
+    def _score_roe(self, roe: float, sector: str) -> int:
+        """ROE 점수 — 섹터 평균 ROE 대비 상대 비율로 채점.
+
+        절대 ROE만 사용하면 저ROE 섹터(전기·가스 1%대, 화학 3%대)는
+        영원히 0~1점, 고ROE 섹터(기계·장비 18%대) 평균 종목도 4~5점
+        구간에 그쳐 섹터 간 비교가 왜곡된다.
+
+        ROE ≤ 0이면 default(0). 섹터 평균 ROE가 0/음수인 경우 절대
+        ROE_THRESHOLDS로 폴백.
+        """
+        if roe is None or roe <= 0:
+            return self.cfg.ROE_DEFAULT_SCORE
+        avg = self._get_sector_avg_roe(sector)
+        if avg <= 0:
+            # 폴백: 절대 ROE 임계
+            for t, s in self.cfg.ROE_THRESHOLDS:
+                if roe >= t:
+                    return s
+            return self.cfg.ROE_DEFAULT_SCORE
+        ratio = roe / avg
+        for t, s in self.cfg.SECTOR_ROE_THRESHOLDS:
+            if ratio >= t:
+                return s
+        return self.cfg.SECTOR_ROE_DEFAULT_SCORE
 
     def _score_debt(self, ratio: float) -> int:
         # ratio == 0(또는 음수)은 데이터 결손 신호로 취급. 한국 상장사에서

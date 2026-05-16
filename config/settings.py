@@ -99,6 +99,16 @@ class ScoringConfig:
     ]
     PBR_DEFAULT_SCORE: int = 0
 
+    # 섹터 상대 PBR 점수 (PBR/sector_avg_pbr 비율 기준).
+    # 절대 PBR로 채점하면 자본집약 섹터(전기·가스 0.4, 금융 0.5)는
+    # 자동 만점, 무형자산 섹터(IT 1.5+, 제약 3.0+)는 자동 0점이 되어
+    # 섹터 간 비교가 무의미해진다. ratio < 0.5 → 만점, 1.0+ → 0점.
+    # 섹터 평균 PBR이 없는 종목은 절대 PBR(PBR_THRESHOLDS)로 폴백.
+    SECTOR_PBR_THRESHOLDS: list[tuple[float, int]] = [
+        (0.5, 3), (0.8, 2), (1.0, 1),
+    ]
+    SECTOR_PBR_DEFAULT_SCORE: int = 0
+
     DIVIDEND_MAX_SCORE: int = 2
     DIVIDEND_THRESHOLDS: list[tuple[float, int]] = [
         (5.0, 2), (2.0, 1),
@@ -247,6 +257,48 @@ class ScoringConfig:
     ]
     ROE_DEFAULT_SCORE: int = 0
 
+    # 섹터별 평균 ROE (%). 데이터 출처: 사내 DB 2026-04-30/05-13/05-16
+    # stock_scores ∪ financial_metrics(year=2025) 표본의 sector별 median.
+    # N<5 섹터는 외부 표본/업계 통상치로 보강. 절대 ROE만 사용하면
+    # 저ROE 섹터(전기·가스 1.2%)는 영원히 0점, 고ROE 섹터(기계·장비
+    # 18.7%)는 평균 종목도 1~2점에 그쳐 섹터 간 비교가 왜곡된다.
+    SECTOR_AVG_ROE: dict[str, float] = {
+        "전기·전자": 5.5,
+        "운송장비·부품": 12.4,
+        "금융": 6.3,
+        "보험": 9.5,
+        "증권": 10.9,
+        "음식료·담배": 10.0,
+        "화학": 2.7,
+        "제약": 5.9,
+        "금속": 4.6,
+        "기계·장비": 18.7,
+        "의료·정밀기기": 7.3,
+        "비금속": 5.0,
+        "섬유·의류": 8.0,
+        "종이·목재": 5.0,
+        "유통": 2.5,
+        "전기·가스": 1.2,
+        "건설": 5.2,
+        "운송·창고": 7.1,
+        "통신": 5.6,
+        "IT 서비스": 10.0,
+        "일반서비스": 13.1,
+        "오락·문화": 6.5,
+        "인프라투용": 5.0,
+        "리츠": 5.0,
+        "기타": 8.2,
+    }
+    DEFAULT_SECTOR_ROE: float = 8.0
+
+    # 섹터 상대 ROE 점수 (roe/sector_avg_roe 비율 기준).
+    # 1.5배 이상 → 만점(5), 0.5배 미만 → 0점.
+    # 섹터 평균이 양수가 아닌 경우(0/음수) 절대 ROE_THRESHOLDS로 폴백.
+    SECTOR_ROE_THRESHOLDS: list[tuple[float, int]] = [
+        (1.5, 5), (1.2, 4), (0.8, 2), (0.4, 1),
+    ]
+    SECTOR_ROE_DEFAULT_SCORE: int = 0
+
     OPR_MARGIN_MAX_SCORE: int = 5
     OPR_MARGIN_THRESHOLDS: list[tuple[float, int]] = [
         (15.0, 5), (10.0, 4), (5.0, 2), (0.0, 1),
@@ -377,6 +429,18 @@ class ScoringConfig:
         (0.0, 1),     # FCF 양수이면 최소 1점
     ]
     FCF_MARGIN_DEFAULT_SCORE: int = 0   # FCF 음수: 0점
+
+    # =========================================================
+    # 지주사 할인 (Holding Discount)
+    # =========================================================
+    # 지주사는 자회사 가치를 그대로 합산하면 NAV 대비 시장가가 통상
+    # 30~40% 할인된다 (Holding Discount). 따라서 적정주가만 30% 깎아
+    # 표시하고 가치 점수는 건드리지 않는다. PER/PBR이 낮은 것은 사실
+    # 이므로 value_score는 유지하되, 사용자가 적정주가를 보고 잘못된
+    # 상방을 기대하지 않도록 fair_value_low/high만 보정한다.
+    HOLDING_NAME_PATTERNS: tuple[str, ...] = ("홀딩스", "Holdings", "지주")
+    HOLDING_SECTORS: tuple[str, ...] = ("지주회사",)
+    HOLDING_DISCOUNT_RATE: float = 0.30
 
 
 class SignalConfig:
