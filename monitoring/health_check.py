@@ -61,6 +61,8 @@ GROWTH_ZERO_RATE_MAX = 0.30   # 30%
 # FCF<0(진짜 음수)은 산식상 정상이므로 제외하고, financial_metrics row가
 # 없거나 revenue=0 AND free_cash_flow=0인 경우만 결손으로 본다.
 QUALITY_ZERO_RATE_MAX = 0.10  # 10%
+# T1-5/T1-6: FCF/revenue 결손율. denominator는 rcept_no!='' 행만
+# (우선주/리츠/델리스팅 등 DART 미보고 종목은 구조적 결손 → 분모 제외).
 FCF_ZERO_RATE_MAX = 0.10      # 10%
 REVENUE_ZERO_RATE_MAX = 0.05  # 5%
 
@@ -361,12 +363,16 @@ def _check_score_loss_rates(conn: sqlite3.Connection, date: str) -> list[HealthC
 
 
 def _check_fcf_loss(conn: sqlite3.Connection, date: str) -> HealthCheck:
-    """T1-5: financial_metrics FCF 결손율 (가장 최근 연도)."""
+    """T1-5: financial_metrics FCF 결손율 (가장 최근 연도).
+
+    rcept_no 빈값(우선주/리츠 등 DART 미보고 종목)은 구조적 결손이므로
+    분모에서 제외한다 (T1-12와 동일 패턴). 진짜 parser 결함만 측정.
+    """
     year = datetime.strptime(date, "%Y-%m-%d").year - 1
     row = conn.execute(
         """SELECT COUNT(*) AS cnt,
                   SUM(CASE WHEN free_cash_flow=0 THEN 1 ELSE 0 END) AS z
-             FROM financial_metrics WHERE year=?""",
+             FROM financial_metrics WHERE year=? AND rcept_no!=''""",
         (year,),
     ).fetchone()
     cnt = row["cnt"] or 0
@@ -375,25 +381,32 @@ def _check_fcf_loss(conn: sqlite3.Connection, date: str) -> HealthCheck:
             name="T1-5",
             title="FCF 결손율",
             status="skip",
-            detail=f"year={year} 재무 데이터 0건",
+            detail=f"year={year} rcept_no 보유 행 0건",
         )
     rate = (row["z"] or 0) / cnt
     return HealthCheck(
         name="T1-5",
         title="FCF 결손율",
         status="pass" if rate < FCF_ZERO_RATE_MAX else "warning",
-        detail=f"{row['z']}/{cnt} ({rate * 100:.1f}%, year={year})",
+        detail=(
+            f"{row['z']}/{cnt} ({rate * 100:.1f}%, year={year}, "
+            f"rcept_no 있음만)"
+        ),
         threshold=f"< {FCF_ZERO_RATE_MAX * 100:.0f}%",
     )
 
 
 def _check_revenue_loss(conn: sqlite3.Connection, date: str) -> HealthCheck:
-    """T1-6: financial_metrics revenue 결손율 (가장 최근 연도)."""
+    """T1-6: financial_metrics revenue 결손율 (가장 최근 연도).
+
+    rcept_no 빈값(우선주/리츠 등 DART 미보고 종목)은 구조적 결손이므로
+    분모에서 제외한다 (T1-12와 동일 패턴). 진짜 parser 결함만 측정.
+    """
     year = datetime.strptime(date, "%Y-%m-%d").year - 1
     row = conn.execute(
         """SELECT COUNT(*) AS cnt,
                   SUM(CASE WHEN revenue=0 THEN 1 ELSE 0 END) AS z
-             FROM financial_metrics WHERE year=?""",
+             FROM financial_metrics WHERE year=? AND rcept_no!=''""",
         (year,),
     ).fetchone()
     cnt = row["cnt"] or 0
@@ -402,14 +415,17 @@ def _check_revenue_loss(conn: sqlite3.Connection, date: str) -> HealthCheck:
             name="T1-6",
             title="revenue 결손율",
             status="skip",
-            detail=f"year={year} 재무 데이터 0건",
+            detail=f"year={year} rcept_no 보유 행 0건",
         )
     rate = (row["z"] or 0) / cnt
     return HealthCheck(
         name="T1-6",
         title="revenue 결손율",
         status="pass" if rate < REVENUE_ZERO_RATE_MAX else "warning",
-        detail=f"{row['z']}/{cnt} ({rate * 100:.1f}%, year={year})",
+        detail=(
+            f"{row['z']}/{cnt} ({rate * 100:.1f}%, year={year}, "
+            f"rcept_no 있음만)"
+        ),
         threshold=f"< {REVENUE_ZERO_RATE_MAX * 100:.0f}%",
     )
 

@@ -413,17 +413,71 @@ def test_signal_threshold_low_score_must_be_sell(tmp_path):
 def test_fcf_loss_rate_threshold_warns(tmp_path):
     db = _build_db(tmp_path)
     _seed_healthy(db)
-    # FCF=0을 100건 중 50건으로 → 50% > 10% 임계
+    # rcept_no!='' 행 95건 중 FCF=0 50건으로 → 52.6% > 10% 임계
     conn = sqlite3.connect(db)
     conn.execute(
         "UPDATE financial_metrics SET free_cash_flow=0 "
-        "WHERE stock_code IN (SELECT stock_code FROM financial_metrics LIMIT 50)",
+        "WHERE stock_code IN (SELECT stock_code FROM financial_metrics "
+        "WHERE rcept_no!='' LIMIT 50)",
     )
     conn.commit()
     conn.close()
     rep = run_health_check("2026-04-28", db_path=str(db))
     t15 = next(c for c in rep.checks if c.name == "T1-5")
     assert t15.status == "warning"
+
+
+def test_t1_5_excludes_rcept_no_empty_rows(tmp_path):
+    """rcept_no 빈값(우선주/리츠 등)은 FCF 결손율 분모에서 제외돼야 한다."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    # _seed_healthy: rcept_no='' 5건 (모두 fcf=0), rcept_no!='' 95건 (fcf>0).
+    # 필터 없으면 5/100=5% → pass(<10%) 였지만, 더 극단 케이스로:
+    # rcept_no='' 행만 fcf=0으로 가득 채우고 나머지는 모두 fcf>0 유지.
+    # → 필터 후 0/95 = 0% pass. 필터 없었으면 동일.
+    # 이 테스트는 detail 문자열에 "rcept_no 있음만"이 포함되는지로 검증.
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    t15 = next(c for c in rep.checks if c.name == "T1-5")
+    assert t15.status == "pass"
+    assert "rcept_no 있음만" in t15.detail
+    # 분모는 95 (100 - rcept_no 빈값 5)
+    assert "/95 " in t15.detail
+
+
+def test_t1_6_excludes_rcept_no_empty_rows(tmp_path):
+    """rcept_no 빈값(우선주 등)은 revenue 결손율 분모에서 제외돼야 한다.
+
+    회귀: 5/18 운영 시 16/320 (5.0%) WARNING 발생.
+    16건 모두 rcept_no='' 인 우선주/특수종목이라 필터 후 0/304 PASS.
+    """
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    # _seed_healthy: 0..4 (i<5) rcept_no='' revenue=0, 그 외 revenue>0.
+    # 즉 결손 5건은 모두 rcept_no='' → 필터 시 분모에서 제외.
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    t16 = next(c for c in rep.checks if c.name == "T1-6")
+    assert t16.status == "pass"
+    assert "rcept_no 있음만" in t16.detail
+    # 분모는 95, revenue=0인 rcept_no!='' 행 없음 → 0/95
+    assert t16.detail.startswith("0/95 ")
+
+
+def test_t1_6_warns_when_real_parser_loss_exists(tmp_path):
+    """rcept_no 있는 행 중 revenue=0이 임계 초과면 WARNING."""
+    db = _build_db(tmp_path)
+    _seed_healthy(db)
+    # rcept_no!='' 행 95건 중 10건의 revenue를 0으로 → 10/95 = 10.5% > 5%
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE financial_metrics SET revenue=0 "
+        "WHERE stock_code IN (SELECT stock_code FROM financial_metrics "
+        "WHERE rcept_no!='' LIMIT 10)",
+    )
+    conn.commit()
+    conn.close()
+    rep = run_health_check("2026-04-28", db_path=str(db))
+    t16 = next(c for c in rep.checks if c.name == "T1-6")
+    assert t16.status == "warning"
 
 
 # ----------------------------------------------------------------------
