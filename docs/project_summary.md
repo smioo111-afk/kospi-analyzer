@@ -345,9 +345,15 @@ RANK_DROP_THRESHOLD = -4         # 4계단 이상 하락
 - `run_health_check(date, db_path=) -> HealthCheckReport`
 
 체크 항목 (T1-N):
-- T1-1 analysis_results / T1-2 KOSPI 지수 / T1-3 KOSPI 변동 정합 / T1-4 외국인 순매수
-- T1-5 점수 손실률 (FCF/매출/prev_revenue/순이익 등) / T1-6 BS 손실 / T1-7 성과추적 / T1-8 cascade 최근
-- T1-9 disclosure_monitor 실행 여부 / T1-10 점수합 정합 / T1-11 신호 임계 / T1-12 circuit breaker
+- T1-1 analysis_results / T1-2 KOSPI 지수 / T1-2b KOSPI 변동 정합 / T1-3 외국인 순매수
+- T1-4 growth/quality 결손율 / T1-5 FCF 결손율 / T1-6 revenue 결손율
+- T1-7 perf_tracking 갱신 / T1-8 cascade 최근 / T1-9 disclosure_monitor 실행
+- T1-10 prev_revenue 결손율 / T1-11 net_income 결손율 / T1-12 BS 결손율
+- T2-1 점수합 정합 / T2-2 신호 임계 / T2-3 circuit breaker 등
+
+결손율 검사(T1-5/T1-6/T1-12) 분모는 `rcept_no!=''` 행만 — 우선주/리츠/
+델리스팅 등 DART 미보고 종목은 구조적 결손이므로 자동 제외, 진짜 parser
+결함만 측정.
 
 매일 16:00 자동 실행, 결과 텔레그램 발송.
 
