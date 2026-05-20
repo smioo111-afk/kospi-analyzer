@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from analysis.scorer import ScoringEngine
+from analysis.signals import Signal, SignalGenerator
 from collectors.dart_disclosure import (
     Disclosure,
     needs_data_refresh,
@@ -261,6 +262,21 @@ def trigger_score_recalculation(
     eff_stoploss_pct = new_stoploss_pct if new_stoploss_pct != 0 else prev_stoploss_pct
     eff_atr = new_atr if new_atr > 0 else prev_atr
 
+    # 6.6) 신호 재판정 — total/financial/growth 가 갱신됐는데도 직전 signal을
+    # 그대로 저장하면 total<SELL_SCORE 인 종목이 hold로 남는 silent regression
+    # (T2-2 health check 위반). 자정 모니터는 fresh price가 없으므로
+    # stoploss_hit는 직전 가격 기준으로만 평가; 직전 사이클이 이미 잡아낸 케이스.
+    current_price = int(price_data.get("current_price") or 0)
+    stoploss_hit = (
+        current_price > 0
+        and eff_stoploss > 0
+        and current_price <= eff_stoploss
+    )
+    signal_result = SignalGenerator().determine_signal(result, stoploss_hit=stoploss_hit)
+    new_signal = signal_result.get("signal", prev.get("signal", ""))
+    new_signal_label = signal_result.get("signal_label", Signal.label(new_signal))
+    new_reason = signal_result.get("reason", "")
+
     # 7) DB 저장 (옵션) — save_stock_scores는 stoploss_map에서 손절/ATR을
     # 읽으므로, 보존 결정한 값을 stoploss_map으로 전달한다.
     if save_to_db:
@@ -279,8 +295,9 @@ def trigger_score_recalculation(
                     **result,
                     "stock_code": stock_code,
                     "stock_name": prev.get("stock_name", ""),
-                    "signal": prev.get("signal", ""),
-                    "signal_label": prev.get("signal_label", ""),
+                    "signal": new_signal,
+                    "signal_label": new_signal_label,
+                    "reason": new_reason,
                 }],
                 stoploss_map=sl_map or None,
             )
@@ -292,7 +309,7 @@ def trigger_score_recalculation(
         **result,
         "stock_code": stock_code,
         "stock_name": prev.get("stock_name", ""),
-        "signal": prev.get("signal", ""),
+        "signal": new_signal,
     })
     return snap
 

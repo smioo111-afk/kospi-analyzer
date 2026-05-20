@@ -190,7 +190,8 @@ RANK_DROP_THRESHOLD = -4         # 4계단 이상 하락
   3. financial_metrics UPSERT
   4. 직전 stock_scores에서 momentum/stoploss/atr 보존 (chart 없음 → scorer가 0 반환 시 silent regression 차단)
   5. scorer.calculate_score → momentum 복원 → total 재합산
-  6. save_stock_scores (stoploss_map으로 보존된 손절/ATR 명시 전달)
+  6. **신호 재판정** (SignalGenerator.determine_signal): 갱신된 total/financial/growth 로 signal/label/reason 재계산. stoploss_hit 은 보존된 eff_stoploss + 직전 current_price 로 평가. 이 단계가 없으면 total<SELL_SCORE 인데 직전 'hold' signal이 그대로 저장돼 T2-2 위반 발생.
+  7. save_stock_scores (stoploss_map으로 보존된 손절/ATR 명시 전달; 새 signal/label/reason 으로 저장)
 - `process_disclosures(disclosures, db, ...)`: needs_data_refresh 필터 + 종목 dedup → 일괄 재계산
 
 ### 3.6 `analysis/shadow_trader.py` — 자동매매 호환 인터페이스 (placeholder)

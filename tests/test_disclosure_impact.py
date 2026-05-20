@@ -324,6 +324,43 @@ def test_recalculation_saves_to_db_when_flag_true():
     db.save_financial_metrics.assert_called_once()
 
 
+def test_recalculation_resaves_sell_signal_when_total_drops_below_threshold():
+    """Regression (T2-2): total이 SELL_SCORE 아래로 떨어졌는데 직전 signal이
+    'hold' 였다면, 저장되는 signal은 'sell' 이어야 한다.
+    (예: 006120 — total 48→42 인데 hold로 남던 silent regression)."""
+    db = _mock_db_with_score(_full_score_row(
+        total_score=48, momentum_score=10, signal="hold", signal_label="⭐ 보유",
+    ))
+    dart = MagicMock()
+    dart.extract_financial_metrics.return_value = {
+        "stock_code": "004800", "rcept_no": "NEW",
+        "year": 2025, "sector": "화학",
+    }
+    scorer = MagicMock()
+    # 재무가 악화돼 total이 42로 떨어진다
+    scorer.calculate_score.return_value = {
+        "stock_code": "004800",
+        "value_score": 14, "financial_score": 3,
+        "growth_score": 15, "momentum_score": 0, "quality_score": 0,
+        "penalties": 0,
+    }
+    snap = trigger_score_recalculation(
+        db=db, dart_client=dart, scorer=scorer, stock_code="004800",
+        save_to_db=True,
+    )
+    assert snap is not None
+    # cat_sum = 14+3+15+10(restored)+0 = 42 < SELL_SCORE(45)
+    assert snap.total_score == 42
+    assert snap.signal == "sell"
+
+    # save_stock_scores 호출 인자에서 signal이 'sell' 로 저장되는지 확인
+    args, kwargs = db.save_stock_scores.call_args
+    signals_arg = kwargs.get("signals") or args[1]
+    assert signals_arg[0]["signal"] == "sell"
+    assert signals_arg[0]["signal_label"] == "🔴 매도"
+    assert "45점" in signals_arg[0]["reason"]
+
+
 def test_recalculation_skips_db_save_when_flag_false():
     db = _mock_db_with_score(_full_score_row())
     dart = MagicMock()
